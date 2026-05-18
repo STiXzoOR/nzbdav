@@ -218,8 +218,19 @@ public sealed class DavDatabaseClient(DavDatabaseContext ctx)
             return;
         }
 
-        Ctx.HistoryItems.RemoveRange(ids.Select(id => new HistoryItem() { Id = id }));
-        Ctx.HistoryCleanupItems.AddRange(ids.Select(x => new HistoryCleanupItem
+        // Query for existing IDs first so deletes are idempotent. Sonarr/Radarr can retry the
+        // same delete repeatedly after their own history has diverged from ours; the previous
+        // stub-entity RemoveRange tripped EF Core's optimistic-concurrency check and surfaced
+        // as HTTP 500 ("affected 0 row(s)"), causing the clients to retry forever.
+        var existingIds = await Ctx.HistoryItems
+            .Where(x => ids.Contains(x.Id))
+            .Select(x => x.Id)
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        if (existingIds.Count == 0) return;
+
+        Ctx.HistoryItems.RemoveRange(existingIds.Select(id => new HistoryItem() { Id = id }));
+        Ctx.HistoryCleanupItems.AddRange(existingIds.Select(x => new HistoryCleanupItem
         {
             Id = x,
             DeleteMountedFiles = deleteFiles
