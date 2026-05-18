@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.8](https://github.com/STiXzoOR/nzbdav/compare/v0.6.7...v0.6.8) (2026-05-18)
+
+
+### Features
+
+* **frontend:** always-on /health endpoint at the root ([23c8791](https://github.com/STiXzoOR/nzbdav/commit/23c8791facea71f3834f2ff0797adca31ff11dbc))
+
+
+### Bug Fixes
+
+* **explore:** pull webdav path from RR splat, not request.url ([b914c87](https://github.com/STiXzoOR/nzbdav/commit/b914c874efa107b11e82b4e5a04c02fc71da0181))
+
 ## [0.6.7](https://github.com/STiXzoOR/nzbdav/compare/v0.6.6...v0.6.7) (2026-05-18)
 
 
