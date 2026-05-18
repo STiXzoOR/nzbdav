@@ -22,12 +22,14 @@ export type ExploreFile = DirectoryItem & {
 }
 
 
-export async function loader({ request }: Route.LoaderArgs) {
+export async function loader({ request, params }: Route.LoaderArgs) {
     // if path ends in trailing slash, remove it
     if (request.url.endsWith('/')) return redirect(request.url.slice(0, -1));
 
-    // load items from backend
-    let path = getWebdavPathDecoded(new URL(request.url).pathname);
+    // Pull the webdav path from the splat param — params["*"] is already
+    // basename-stripped by React Router, so this works under URL_BASE
+    // without re-implementing the prefix-stripping in getWebdavPath.
+    const path = decodeURIComponent(params["*"] || "");
     return {
         parentDirectories: getParentDirectories(path),
         items: (await backendClient.listWebdavDirectory(path)).map(x => {
