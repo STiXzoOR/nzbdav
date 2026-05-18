@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.7](https://github.com/STiXzoOR/nzbdav/compare/v0.6.6...v0.6.7) (2026-05-18)
+
+
+### Bug Fixes
+
+* **url-base:** prefix the call sites I missed in the first pass ([d2abc07](https://github.com/STiXzoOR/nzbdav/commit/d2abc07811f9ef4395b80588b5b248810db55fca))
+
 ## [0.6.6](https://github.com/STiXzoOR/nzbdav/compare/v0.6.5...v0.6.6) (2026-05-18)
 
 
