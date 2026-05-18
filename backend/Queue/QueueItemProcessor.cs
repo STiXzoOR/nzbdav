@@ -188,6 +188,12 @@ public class QueueItemProcessor(
             new RenameDuplicatesPostProcessor(dbClient).RenameDuplicates();
             new BlocklistedFilePostProcessor(configManager, dbClient).RemoveBlocklistedFiles();
 
+            // Always-on guard: if no DavItem files (only the mount directory) ended up in the
+            // change tracker, treat the NZB as Failed instead of Completed. Catches the case
+            // where every file was silently dropped by FileProcessor's non-video filter — see
+            // EnsureFilesProducedValidator for the full reasoning.
+            new EnsureFilesProducedValidator(dbClient).ThrowIfValidationFails();
+
             // validate video files found
             if (configManager.IsEnsureImportableVideoEnabled())
                 new EnsureImportableVideoValidator(dbClient).ThrowIfValidationFails();
