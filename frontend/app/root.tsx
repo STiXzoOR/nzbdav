@@ -19,9 +19,13 @@ import { Loading } from "./routes/_index/components/loading/loading";
 import { withUrlBase } from "~/utils/url-base";
 
 export async function loader({ request }: Route.LoaderArgs) {
-  let path = new URL(request.url).pathname;
-  if (path === "/login") return { useLayout: false };
-  if (path === "/onboarding") return { useLayout: false };
+  // request.url is the full URL including any URL_BASE prefix, so a plain
+  // `path === "/login"` check breaks under sub-path hosting. Match by suffix
+  // instead — /login and /onboarding are leaf routes, nothing else ends in
+  // either string.
+  let path = new URL(request.url).pathname.replace(/\/+$/, "");
+  if (path.endsWith("/login")) return { useLayout: false };
+  if (path.endsWith("/onboarding")) return { useLayout: false };
 
   return {
     useLayout: true,
