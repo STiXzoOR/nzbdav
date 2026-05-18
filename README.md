@@ -7,7 +7,9 @@
 > [`nzbdav-dev/nzbdav`](https://github.com/nzbdav-dev/nzbdav). PRs are sent
 > upstream where they make sense; this fork tracks `main` of upstream and
 > re-applies the local patches on top. Images are published to
-> `ghcr.io/stixzoor/nzbdav`.
+> `ghcr.io/stixzoor/nzbdav` and `stixzoor/nzbdav` on Docker Hub, both
+> with `URL_BASE=/nzbdav` baked in for sub-path hosting (set the matching
+> runtime env var in your compose — see [`docs/url-base.md`](docs/url-base.md)).
 
 # Nzb Dav
 
