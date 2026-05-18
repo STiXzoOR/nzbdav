@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.6](https://github.com/STiXzoOR/nzbdav/compare/v0.6.5...v0.6.6) (2026-05-18)
+
+
+### Bug Fixes
+
+* **root:** match /login and /onboarding under URL_BASE ([186fff3](https://github.com/STiXzoOR/nzbdav/commit/186fff375f224c420845d355750a4ecb9a624a9e))
+
 ## [0.6.5](https://github.com/STiXzoOR/nzbdav/compare/v0.6.4...v0.6.5) (2026-05-18)
 
 
