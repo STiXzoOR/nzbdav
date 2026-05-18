@@ -2,6 +2,13 @@
   <img width="1101" height="238" alt="image" src="https://github.com/user-attachments/assets/b14165f4-24ff-4abe-8af6-3ca852e781d4" />
 </p>
 
+> **Fork notice** — this is the [`STiXzoOR/nzbdav`](https://github.com/STiXzoOR/nzbdav)
+> fork, which carries a handful of patches on top of upstream
+> [`nzbdav-dev/nzbdav`](https://github.com/nzbdav-dev/nzbdav). PRs are sent
+> upstream where they make sense; this fork tracks `main` of upstream and
+> re-applies the local patches on top. Images are published to
+> `ghcr.io/stixzoor/nzbdav`.
+
 # Nzb Dav
 
 NzbDav is a WebDAV server that allows you to mount and browse NZB documents as a virtual file system without downloading. It's designed to integrate with other media management tools, like Sonarr and Radarr, by providing a SABnzbd-compatible API. With it, you can build an infinite Plex or Jellyfin media library that streams directly from your usenet provider at maxed-out speeds, without using any storage space on your own server.
