@@ -96,7 +96,9 @@ jobs:
 
           echo "NZBDAV_VERSION=${MAJOR}.${MINOR}.${PATCH}" >> $GITHUB_OUTPUT
 
-          GHCR_REPO="ghcr.io/${{ github.repository }}"
+          # Docker registries require lowercase repository names; github.repository
+          # preserves the original case (e.g. STiXzoOR/nzbdav), so normalize first.
+          GHCR_REPO=$(echo "ghcr.io/${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           {
             echo "TAGS<<EOF"
             echo "${GHCR_REPO}:alpha"
@@ -105,7 +107,7 @@ jobs:
             echo "${GHCR_REPO}:${MAJOR}.${MINOR}.x"
             echo "${GHCR_REPO}:${MAJOR}.${MINOR}.${PATCH}"
             if [ -n "$DOCKERHUB_USERNAME" ]; then
-              DOCKERHUB_REPO="${DOCKERHUB_USERNAME}/nzbdav"
+              DOCKERHUB_REPO=$(echo "${DOCKERHUB_USERNAME}/nzbdav" | tr '[:upper:]' '[:lower:]')
               echo "${DOCKERHUB_REPO}:alpha"
               echo "${DOCKERHUB_REPO}:latest"
               echo "${DOCKERHUB_REPO}:${MAJOR}.x"

@@ -55,13 +55,16 @@ jobs:
       - name: Set tags and NZBDAV_VERSION
         id: set_vars
         run: |
-          GHCR_REPO="ghcr.io/${{ github.repository }}"
+          # Docker registries require lowercase repository names; github.repository
+          # preserves the original case (e.g. STiXzoOR/nzbdav), so normalize first.
+          GHCR_REPO=$(echo "ghcr.io/${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           echo "NZBDAV_VERSION=$(date +%Y-%m-%d)" >> $GITHUB_OUTPUT
           {
             echo "TAGS<<EOF"
             echo "${GHCR_REPO}:pre-release"
             if [ -n "$DOCKERHUB_USERNAME" ]; then
-              echo "${DOCKERHUB_USERNAME}/nzbdav:pre-release"
+              DOCKERHUB_REPO=$(echo "${DOCKERHUB_USERNAME}/nzbdav" | tr '[:upper:]' '[:lower:]')
+              echo "${DOCKERHUB_REPO}:pre-release"
             fi
             echo "EOF"
           } >> $GITHUB_OUTPUT
