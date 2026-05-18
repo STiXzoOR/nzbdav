@@ -68,7 +68,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Skip Docker Hub login if the secret isn't configured (e.g. forks that
+      # don't publish to Docker Hub at all). When configured, the repo target
+      # is derived from DOCKERHUB_USERNAME so each fork pushes under its own
+      # namespace rather than fighting upstream for nzbdav/nzbdav.
       - name: Log in to Docker Hub
+        if: ${{ secrets.DOCKERHUB_USERNAME != '' }}
         uses: docker/login-action@v4
         with:
           registry: docker.io
@@ -77,6 +82,8 @@ jobs:
 
       - name: Set tags and NZBDAV_VERSION
         id: set_vars
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           MAJOR=${{ needs.release.outputs.major }}
           MINOR=${{ needs.release.outputs.minor }}
@@ -85,7 +92,6 @@ jobs:
           echo "NZBDAV_VERSION=${MAJOR}.${MINOR}.${PATCH}" >> $GITHUB_OUTPUT
 
           GHCR_REPO="ghcr.io/${{ github.repository }}"
-          DOCKERHUB_REPO="nzbdav/nzbdav"
           {
             echo "TAGS<<EOF"
             echo "${GHCR_REPO}:alpha"
@@ -93,11 +99,14 @@ jobs:
             echo "${GHCR_REPO}:${MAJOR}.x"
             echo "${GHCR_REPO}:${MAJOR}.${MINOR}.x"
             echo "${GHCR_REPO}:${MAJOR}.${MINOR}.${PATCH}"
-            echo "${DOCKERHUB_REPO}:alpha"
-            echo "${DOCKERHUB_REPO}:latest"
-            echo "${DOCKERHUB_REPO}:${MAJOR}.x"
-            echo "${DOCKERHUB_REPO}:${MAJOR}.${MINOR}.x"
-            echo "${DOCKERHUB_REPO}:${MAJOR}.${MINOR}.${PATCH}"
+            if [ -n "$DOCKERHUB_USERNAME" ]; then
+              DOCKERHUB_REPO="${DOCKERHUB_USERNAME}/nzbdav"
+              echo "${DOCKERHUB_REPO}:alpha"
+              echo "${DOCKERHUB_REPO}:latest"
+              echo "${DOCKERHUB_REPO}:${MAJOR}.x"
+              echo "${DOCKERHUB_REPO}:${MAJOR}.${MINOR}.x"
+              echo "${DOCKERHUB_REPO}:${MAJOR}.${MINOR}.${PATCH}"
+            fi
             echo "EOF"
           } >> $GITHUB_OUTPUT
 
