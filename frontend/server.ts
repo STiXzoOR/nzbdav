@@ -26,6 +26,21 @@ const URL_BASE = normalizeUrlBase(process.env.URL_BASE);
 const app = express();
 app.disable("x-powered-by");
 
+// /health is always served at the unprefixed root regardless of URL_BASE so
+// container healthchecks and reverse-proxy probes don't have to know the
+// sub-path. Proxies to the backend's /health (the actual liveness signal)
+// and surfaces its status — keeps the .NET process the source of truth
+// while leaving the backend port internal.
+app.get("/health", async (_req, res) => {
+  try {
+    const backendUrl = process.env.BACKEND_URL || "http://localhost:8080";
+    const r = await fetch(`${backendUrl}/health`, { signal: AbortSignal.timeout(3000) });
+    res.status(r.ok ? 200 : 503).type("text/plain").send(r.ok ? "Healthy" : "Backend unhealthy");
+  } catch {
+    res.status(503).type("text/plain").send("Backend unreachable");
+  }
+});
+
 // All app middleware goes on a sub-router so it inherits the URL_BASE prefix without
 // requiring per-middleware path arithmetic. Inside the router, `req.path` is already
 // stripped of URL_BASE — existing path-prefix checks (`/api`, `/nzbs`, etc.) work
