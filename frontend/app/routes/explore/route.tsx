@@ -9,6 +9,7 @@ import { getDownloadKey } from "~/auth/downloads.server";
 import { Loading } from "../_index/components/loading/loading";
 import { formatFileSize } from "~/utils/file-size";
 import { ItemMenu } from "./item-menu/item-menu";
+import { withUrlBase } from "~/utils/url-base";
 
 export type ExplorePageData = {
     parentDirectories: string[],
@@ -65,7 +66,7 @@ function Body(props: ExplorePageData) {
         const relativePath = getRelativePath(pathname, encodeURIComponent(file.name));
         const extension = getExtension(file.name);
         const extensionQueryParam = extension ? `&extension=${extension}` : '';
-        return `/view/${relativePath}?downloadKey=${file.downloadKey}${extensionQueryParam}`;
+        return withUrlBase(`/view/${relativePath}?downloadKey=${file.downloadKey}${extensionQueryParam}`);
     }, [location.pathname]);
 
     return (

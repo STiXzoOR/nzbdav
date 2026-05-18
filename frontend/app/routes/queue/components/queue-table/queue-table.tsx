@@ -73,7 +73,7 @@ export function QueueTable({
         setIsConfirmingRemoval(false);
         onIsRemovingChanged(queued_nzo_ids, true);
         try {
-            const url = `/api?mode=queue&name=delete`;
+            const url = withUrlBase(`/api?mode=queue&name=delete`);
             const response = await fetch(url, {
                 method: 'POST',
                 headers: {

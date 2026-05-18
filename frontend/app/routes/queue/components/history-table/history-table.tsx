@@ -42,7 +42,7 @@ export function HistoryTable({ historySlots, totalHistoryCount, onIsSelectedChan
         setIsConfirmingRemoval(false);
         onIsRemovingChanged(nzo_ids, true);
         try {
-            const url = `/api?mode=history&name=delete&del_completed_files=${deleteCompletedFiles ? 1 : 0}`;
+            const url = withUrlBase(`/api?mode=history&name=delete&del_completed_files=${deleteCompletedFiles ? 1 : 0}`);
             const response = await fetch(url, {
                 method: 'POST',
                 headers: {
@@ -172,7 +172,7 @@ export function Actions({ slot, onRemove }: { slot: PresentationHistorySlot, onR
 
     // determine nzb download URL
     var nzbDownloadUrl = slot.nzb_blob_id
-        ? `/api/download-nzb?nzbBlobId=${slot.nzb_blob_id}`
+        ? withUrlBase(`/api/download-nzb?nzbBlobId=${slot.nzb_blob_id}`)
         : null;
 
     // determine whether explore action should be disabled
