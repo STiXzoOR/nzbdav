@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Http;
+﻿using System.Net;
+using Microsoft.AspNetCore.Http;
 using NzbWebDAV.Config;
 using NzbWebDAV.Database.Models;
 using NzbWebDAV.Extensions;
@@ -25,7 +26,12 @@ public class AddFileRequest()
 
         return new AddFileRequest()
         {
-            FileName = file.FileName,
+            // Indexer NZB filenames arrive XML/HTML-escaped (e.g. "Erin.&amp;.Aaron").
+            // Decode so the job/mount-folder name matches the per-file names that are
+            // parsed (and auto-unescaped) from the NZB XML. Otherwise the folder is
+            // left as "Erin.amp;.Aaron" once the stray '&' is stripped, which never
+            // matches the files inside and sends *arr into an import-retry loop.
+            FileName = WebUtility.HtmlDecode(file.FileName),
             ContentType = file.ContentType,
             NzbFileStream = file.OpenReadStream(),
             Category = context.GetRequestParam("cat") ?? configManager.GetManualUploadCategory(),
