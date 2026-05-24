@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.9](https://github.com/STiXzoOR/nzbdav/compare/v0.6.8...v0.6.9) (2026-05-24)
+
+
+### Bug Fixes
+
+* **addfile:** decode HTML entities in NZB filenames ([0465f60](https://github.com/STiXzoOR/nzbdav/commit/0465f602c30958ebfc82ebc11d1c6f246305f06f))
+
 ## [0.6.8](https://github.com/STiXzoOR/nzbdav/compare/v0.6.7...v0.6.8) (2026-05-18)
 
 
