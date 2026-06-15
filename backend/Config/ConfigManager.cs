@@ -195,6 +195,39 @@ public class ConfigManager
                && GetArrConfig().GetInstanceCount() > 0;
     }
 
+    public bool IsRequireAllProvidersEnabled()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("repair.require-all-providers"));
+        return v != null ? bool.Parse(v) : true;
+    }
+
+    public bool IsPar2RecoveryEnabled()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("repair.use-par2-recovery"));
+        return v != null ? bool.Parse(v) : true;
+    }
+
+    public double GetMaxMissingSegmentRatio()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("repair.max-missing-segment-ratio"));
+        return v != null ? double.Parse(v, System.Globalization.CultureInfo.InvariantCulture) : 0.01;
+    }
+
+    public int GetRequiredConsecutiveFailures()
+    {
+        var v = StringUtil.EmptyToNull(GetConfigValue("repair.required-consecutive-failures"));
+        return v != null ? int.Parse(v) : 3;
+    }
+
+    public TimeSpan GetMinimumFailureWindow()
+        => DurationUtil.Parse(GetConfigValue("repair.minimum-failure-window"), TimeSpan.FromHours(24));
+
+    public TimeSpan GetRecheckBackoff()
+        => DurationUtil.Parse(GetConfigValue("repair.recheck-backoff"), TimeSpan.FromHours(8));
+
+    public TimeSpan GetRepairMinimumAge()
+        => DurationUtil.Parse(GetConfigValue("repair.minimum-age"), TimeSpan.FromDays(7));
+
     public ArrConfig GetArrConfig()
     {
         var defaultValue = new ArrConfig();
