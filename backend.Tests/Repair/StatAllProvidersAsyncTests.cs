@@ -25,7 +25,7 @@ public class StatAllProvidersAsyncTests
             ResponseMessage = "223 0 <seg> article exists",
         });
 
-        var outcomes = await client.StatAllProvidersAsync("seg", CancellationToken.None);
+        var outcomes = await client.StatAllProvidersAsync("seg", TimeSpan.FromSeconds(30), CancellationToken.None);
 
         Assert.Single(outcomes);
         Assert.Equal(ProviderStatOutcome.Kind.Exists, outcomes[0].Result);
@@ -42,7 +42,7 @@ public class StatAllProvidersAsyncTests
             ResponseMessage = "430 no such article",
         });
 
-        var outcomes = await client.StatAllProvidersAsync("seg", CancellationToken.None);
+        var outcomes = await client.StatAllProvidersAsync("seg", TimeSpan.FromSeconds(30), CancellationToken.None);
 
         Assert.Single(outcomes);
         Assert.Equal(ProviderStatOutcome.Kind.DefinitivelyMissing, outcomes[0].Result);
@@ -67,7 +67,7 @@ public class StatAllProvidersAsyncTests
             ResponseMessage = message,
         });
 
-        var outcomes = await client.StatAllProvidersAsync("seg", CancellationToken.None);
+        var outcomes = await client.StatAllProvidersAsync("seg", TimeSpan.FromSeconds(30), CancellationToken.None);
 
         Assert.Single(outcomes);
         Assert.Equal(ProviderStatOutcome.Kind.TransientError, outcomes[0].Result);
@@ -78,7 +78,7 @@ public class StatAllProvidersAsyncTests
     {
         var client = new FakeNntpClient(_ => throw new IOException("connection reset"));
 
-        var outcomes = await client.StatAllProvidersAsync("seg", CancellationToken.None);
+        var outcomes = await client.StatAllProvidersAsync("seg", TimeSpan.FromSeconds(30), CancellationToken.None);
 
         Assert.Single(outcomes);
         Assert.Equal(ProviderStatOutcome.Kind.TransientError, outcomes[0].Result);
@@ -90,14 +90,74 @@ public class StatAllProvidersAsyncTests
         var client = new FakeNntpClient(_ => throw new OperationCanceledException());
 
         await Assert.ThrowsAsync<OperationCanceledException>(
-            () => client.StatAllProvidersAsync("seg", CancellationToken.None));
+            () => client.StatAllProvidersAsync("seg", TimeSpan.FromSeconds(30), CancellationToken.None));
+    }
+
+    // A hung STAT (uncancelled socket read / connection-pool starvation) must NOT block the loop:
+    // the per-STAT timeout cancels the inner read and classifies it as TransientError, fast.
+    [Fact]
+    public async Task PerStatTimeout_RoutesToTransientError_DoesNotHang()
+    {
+        // StatAsync blocks forever (until its token is cancelled) -- simulates a hung NNTP read.
+        var client = new FakeNntpClient(stat: null,
+            statAsync: async token =>
+            {
+                await Task.Delay(Timeout.Infinite, token);
+                return new UsenetStatResponse { ArticleExists = true, ResponseCode = 223, ResponseMessage = "223" };
+            });
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var outcomes = await client.StatAllProvidersAsync(
+            "seg", TimeSpan.FromMilliseconds(100), CancellationToken.None);
+        sw.Stop();
+
+        Assert.Single(outcomes);
+        Assert.Equal(ProviderStatOutcome.Kind.TransientError, outcomes[0].Result);
+        // Generous upper bound: proves it returned via the timeout, not hung.
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(10),
+            $"StatAllProvidersAsync should return shortly after the 100ms timeout, took {sw.Elapsed}.");
+    }
+
+    // The outer ct cancellation must still propagate even with the per-STAT timeout guard in place.
+    [Fact]
+    public async Task OuterCancellation_StillPropagates_WithTimeout()
+    {
+        using var cts = new CancellationTokenSource();
+        var client = new FakeNntpClient(stat: null,
+            statAsync: async token =>
+            {
+                await Task.Delay(Timeout.Infinite, token);
+                return new UsenetStatResponse { ArticleExists = true, ResponseCode = 223, ResponseMessage = "223" };
+            });
+
+        // Cancel the OUTER token shortly; the linked inner token cancels too, but the
+        // `!ct.IsCancellationRequested` guard ensures this rethrows instead of being swallowed.
+        cts.CancelAfter(TimeSpan.FromMilliseconds(50));
+
+        // TaskCanceledException derives from OperationCanceledException; ThrowsAny accepts both.
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => client.StatAllProvidersAsync("seg", TimeSpan.FromSeconds(30), cts.Token));
     }
 
     /// <summary>Minimal NntpClient that only implements StatAsync; everything else throws.</summary>
-    private sealed class FakeNntpClient(Func<SegmentId, UsenetStatResponse> stat) : NntpClient
+    private sealed class FakeNntpClient : NntpClient
     {
+        private readonly Func<SegmentId, UsenetStatResponse>? _stat;
+        private readonly Func<CancellationToken, Task<UsenetStatResponse>>? _statAsync;
+
+        public FakeNntpClient(Func<SegmentId, UsenetStatResponse> stat)
+            => _stat = stat;
+
+        public FakeNntpClient(
+            Func<SegmentId, UsenetStatResponse>? stat,
+            Func<CancellationToken, Task<UsenetStatResponse>> statAsync)
+        {
+            _stat = stat;
+            _statAsync = statAsync;
+        }
+
         public override Task<UsenetStatResponse> StatAsync(SegmentId segmentId, CancellationToken cancellationToken)
-            => Task.FromResult(stat(segmentId));
+            => _statAsync != null ? _statAsync(cancellationToken) : Task.FromResult(_stat!(segmentId));
 
         public override Task ConnectAsync(string host, int port, bool useSsl, CancellationToken cancellationToken)
             => throw new NotSupportedException();

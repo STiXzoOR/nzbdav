@@ -31,16 +31,18 @@ public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers) 
     }
 
     public override async Task<IReadOnlyList<ProviderStatOutcome>> StatAllProvidersAsync(
-        SegmentId segmentId, CancellationToken ct)
+        SegmentId segmentId, TimeSpan statTimeout, CancellationToken ct)
     {
         var enabled = providers.Where(p => p.ProviderType != ProviderType.Disabled).ToList();
         var outcomes = new List<ProviderStatOutcome>(enabled.Count);
         foreach (var provider in enabled)
         {
             ct.ThrowIfCancellationRequested();
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(statTimeout);
             try
             {
-                var r = await provider.StatAsync(segmentId, ct).ConfigureAwait(false);
+                var r = await provider.StatAsync(segmentId, timeoutCts.Token).ConfigureAwait(false);
                 // Only a genuine 430 means the article is definitively gone. StatAsync does
                 // NOT throw on server-fault/auth codes (Unknown/412/420/480/481/482/502/...);
                 // it returns them as ResponseType values. Treat all of those as TransientError
@@ -53,6 +55,11 @@ public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers) 
                     _ => ProviderStatOutcome.Kind.TransientError,
                 };
                 outcomes.Add(new ProviderStatOutcome(kind));
+            }
+            catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !ct.IsCancellationRequested)
+            {
+                // per-STAT timeout (hung read / pool starvation) -> transient, never blocks the loop
+                outcomes.Add(new ProviderStatOutcome(ProviderStatOutcome.Kind.TransientError));
             }
             catch (Exception e) when (!e.IsCancellationException())
             {

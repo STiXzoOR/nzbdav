@@ -222,6 +222,9 @@ public class ConfigManager
     public TimeSpan GetRepairMinimumAge()
         => DurationUtil.Parse(GetConfigValue("repair.minimum-age"), TimeSpan.FromDays(7));
 
+    public TimeSpan GetStatTimeout()
+        => DurationUtil.Parse(GetConfigValue("repair.stat-timeout"), TimeSpan.FromSeconds(30));
+
     public ArrConfig GetArrConfig()
     {
         var defaultValue = new ArrConfig();
