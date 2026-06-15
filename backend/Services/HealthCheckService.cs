@@ -7,6 +7,7 @@ using NzbWebDAV.Database.Models;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Queue.PostProcessors;
+using NzbWebDAV.Services.Repair;
 using NzbWebDAV.Utils;
 using NzbWebDAV.Websocket;
 using Serilog;
@@ -114,54 +115,83 @@ public class HealthCheckService : BackgroundService
         CancellationToken ct
     )
     {
-        try
+        var now = DateTimeOffset.UtcNow;
+
+        // (1) minimum-age guard: don't health-check (and possibly delete) very fresh
+        // releases — articles may not have fully propagated across providers yet.
+        if (davItem.ReleaseDate is { } rd && now - rd < _configManager.GetRepairMinimumAge())
         {
-            // update the release date, if null
-            var segments = await GetAllSegments(davItem, dbClient, ct).ConfigureAwait(false);
-            if (davItem.ReleaseDate == null) await UpdateReleaseDate(davItem, segments, ct).ConfigureAwait(false);
-
-
-            // setup progress tracking
-            var progressHook = new Progress<int>();
-            var debounce = DebounceUtil.CreateDebounce(TimeSpan.FromMilliseconds(200));
-            progressHook.ProgressChanged += (_, progress) =>
-            {
-                var message = $"{davItem.Id}|{progress}";
-                debounce(() => _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, message));
-            };
-
-            // perform health check
-            var progress = progressHook.ToPercentage(segments.Count);
-            await _usenetClient.CheckAllSegmentsAsync(segments, concurrency, progress, ct).ConfigureAwait(false);
-            _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|100");
-            _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|done");
-
-            // update the database
-            davItem.LastHealthCheck = DateTimeOffset.UtcNow;
-            davItem.NextHealthCheck = davItem.ReleaseDate + 2 * (davItem.LastHealthCheck - davItem.ReleaseDate);
-            dbClient.Ctx.HealthCheckResults.Add(SendStatus(new HealthCheckResult()
-            {
-                Id = Guid.NewGuid(),
-                DavItemId = davItem.Id,
-                Path = davItem.Path,
-                CreatedAt = DateTimeOffset.UtcNow,
-                Result = HealthCheckResult.HealthResult.Healthy,
-                RepairStatus = HealthCheckResult.RepairAction.None,
-                Message = "File is healthy."
-            }));
+            davItem.LastHealthCheck = now;
+            davItem.NextHealthCheck = now + _configManager.GetRecheckBackoff();
             await dbClient.Ctx.SaveChangesAsync(ct).ConfigureAwait(false);
+            return;
         }
-        catch (UsenetArticleNotFoundException e)
-        {
-            _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|100");
-            _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|done");
-            if (FilenameUtil.IsImportantFileType(davItem.Name))
-                lock (_missingSegmentIds)
-                    _missingSegmentIds.Add(e.SegmentId);
 
-            // when usenet article is missing, perform repairs
-            await Repair(davItem, dbClient, ct).ConfigureAwait(false);
+        // (2) classify every segment across all providers
+        var segments = await GetAllSegments(davItem, dbClient, ct).ConfigureAwait(false);
+        if (davItem.ReleaseDate == null) await UpdateReleaseDate(davItem, segments, ct).ConfigureAwait(false);
+
+        // setup progress tracking (preserve original debounced websocket progress behavior)
+        var debounce = DebounceUtil.CreateDebounce(TimeSpan.FromMilliseconds(200));
+        void ReportProgress(int percent)
+        {
+            var message = $"{davItem.Id}|{percent}";
+            debounce(() => _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, message));
         }
+
+        var statuses = new List<SegmentStatus>(segments.Count);
+        var processed = 0;
+        foreach (var segmentId in segments)
+        {
+            ct.ThrowIfCancellationRequested();
+            var outcomes = await _usenetClient.StatAllProvidersAsync(segmentId, ct).ConfigureAwait(false);
+            statuses.Add(SegmentClassifier.Classify(outcomes));
+            processed++;
+            if (segments.Count > 0) ReportProgress(processed * 100 / segments.Count);
+        }
+        _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|100");
+        _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|done");
+
+        // (3) verdict — Phase A ratio fallback (par2 recovery added in a later task)
+        var verdict = SegmentRatioEvaluator.Evaluate(statuses, _configManager.GetMaxMissingSegmentRatio());
+
+        // (4) strike machine
+        var strike = StrikeMachine.Next(verdict, davItem.HealthCheckFailureCount, davItem.FirstFailedHealthCheck,
+            now, _configManager.GetMinimumFailureWindow(), _configManager.GetRecheckBackoff(),
+            _configManager.GetRequiredConsecutiveFailures());
+
+        // (5) persist strike state + schedule
+        davItem.HealthCheckFailureCount = strike.NewCount;
+        davItem.FirstFailedHealthCheck = strike.NewFirstFailed;
+        davItem.LastHealthCheck = now;
+        davItem.NextHealthCheck = strike.NextCheck;
+
+        // (6) record result row
+        var (res, repairStatus, msg) = verdict switch
+        {
+            FileHealthVerdict.Healthy =>
+                (HealthCheckResult.HealthResult.Healthy, HealthCheckResult.RepairAction.None, "File is healthy."),
+            FileHealthVerdict.Inconclusive =>
+                (HealthCheckResult.HealthResult.Unhealthy, HealthCheckResult.RepairAction.ActionNeeded,
+                 "Inconclusive (provider error/timeout); not actioned, rescheduled."),
+            _ => (HealthCheckResult.HealthResult.Unhealthy, HealthCheckResult.RepairAction.ActionNeeded,
+                 $"Missing articles confirmed (strike {strike.NewCount}/{_configManager.GetRequiredConsecutiveFailures()})."),
+        };
+        dbClient.Ctx.HealthCheckResults.Add(SendStatus(new HealthCheckResult()
+        {
+            Id = Guid.NewGuid(),
+            DavItemId = davItem.Id,
+            Path = davItem.Path,
+            CreatedAt = now,
+            Result = res,
+            RepairStatus = repairStatus,
+            Message = msg,
+        }));
+        await dbClient.Ctx.SaveChangesAsync(ct).ConfigureAwait(false);
+
+        // (7) repair only when confirmed dead across the window
+        if (strike.ShouldRepair)
+            await Repair(davItem, dbClient, ct).ConfigureAwait(false);
     }
 
     private async Task UpdateReleaseDate(DavItem davItem, List<string> segments, CancellationToken ct)
