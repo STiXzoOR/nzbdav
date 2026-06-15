@@ -153,8 +153,65 @@ public class HealthCheckService : BackgroundService
         _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|100");
         _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|done");
 
-        // (3) verdict — Phase A ratio fallback (par2 recovery added in a later task)
-        var verdict = SegmentRatioEvaluator.Evaluate(statuses, _configManager.GetMaxMissingSegmentRatio());
+        // (3) verdict — par2-aware recoverability is the PRIMARY path; segment-ratio is the fallback.
+        //
+        // par2 mapping note (per-subtype byte-range availability):
+        //   - DavNzbFile    : stores only SegmentIds[] with NO per-segment byte sizes.
+        //   - DavRarFile    : RarParts[] carry per-PART byte ranges (Offset/ByteCount) but
+        //                     NOT per-segment ranges (a part flattens to many segments).
+        //   - DavMultipartFile : FileParts[] carry per-PART SegmentIdByteRange/FilePartByteRange
+        //                     but, again, not per-individual-segment ranges.
+        // GetAllSegments flattens every subtype into one positional segment list aligned 1:1 with
+        // `statuses`, discarding the part structure. Since no subtype exposes a clean per-SEGMENT
+        // byte offset (only per-part), we use the equal-size approximation FileLength/segmentCount
+        // uniformly for all subtypes. This is acceptable and bounded: a missing segment damages at
+        // most ceil(perSegment/sliceSize)+1 slices, and the verdict is further gated by the
+        // all-provider STAT, the strike machine, and the minimum-age guard before any deletion.
+        var par2Set = _configManager.IsPar2RecoveryEnabled()
+            ? await dbClient.Ctx.Par2RecoverySets
+                .FirstOrDefaultAsync(s => s.DirectoryDavItemId == davItem.ParentId, ct).ConfigureAwait(false)
+            : null;
+
+        Par2SourceFile? sourceRow = null;
+        if (par2Set != null && statuses.All(s => s != SegmentStatus.Inconclusive))
+        {
+            sourceRow = await dbClient.Ctx.Par2SourceFiles
+                .FirstOrDefaultAsync(f => f.RecoverySetId == par2Set.Id && f.DavItemId == davItem.Id, ct)
+                .ConfigureAwait(false);
+        }
+
+        // STAT the recovery volumes (all-provider) only when we actually have a tracked source file
+        // to recover. Inconclusive on any volume segment must win (never delete on unconfirmed data).
+        var availableRecoveryBlocks = 0;
+        var anyVolumeInconclusive = false;
+        if (par2Set != null && sourceRow != null)
+        {
+            var volumes = await dbClient.Ctx.Par2RecoveryVolumes
+                .Where(v => v.RecoverySetId == par2Set.Id)
+                .ToListAsync(ct).ConfigureAwait(false);
+            var volStatuses = new List<(int BlockCount, bool AllArticlesPresent)>(volumes.Count);
+            foreach (var vol in volumes)
+            {
+                var allPresent = true;
+                foreach (var seg in vol.SegmentIds)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var st = SegmentClassifier.Classify(
+                        await _usenetClient.StatAllProvidersAsync(seg, ct).ConfigureAwait(false));
+                    if (st == SegmentStatus.Inconclusive) { anyVolumeInconclusive = true; allPresent = false; break; }
+                    if (st != SegmentStatus.Present) allPresent = false;
+                }
+                if (anyVolumeInconclusive) break;
+                volStatuses.Add((vol.BlockCount, allPresent));
+            }
+            if (!anyVolumeInconclusive)
+                availableRecoveryBlocks = Par2RecoveryCalculator.AvailableRecoveryBlocks(volStatuses);
+        }
+
+        var verdict = DecideVerdict(
+            statuses, segments, par2Set, sourceRow,
+            availableRecoveryBlocks, anyVolumeInconclusive,
+            _configManager.GetMaxMissingSegmentRatio());
 
         // (4) strike machine
         var strike = StrikeMachine.Next(verdict, davItem.HealthCheckFailureCount, davItem.FirstFailedHealthCheck,
@@ -193,6 +250,68 @@ public class HealthCheckService : BackgroundService
         // (7) repair only when confirmed dead across the window
         if (strike.ShouldRepair)
             await Repair(davItem, dbClient, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Pure verdict decision (no I/O). The async recovery-volume STAT is performed by the caller
+    /// and threaded in as <paramref name="availableRecoveryBlocks"/>/<paramref name="anyVolumeInconclusive"/>.
+    ///
+    /// Precedence:
+    ///   1. par2 disabled or no recovery set for this directory  → segment-ratio fallback.
+    ///   2. any INPUT segment Inconclusive                       → Inconclusive (dominates; never deletes).
+    ///   3. no par2 source-file row for this dav item            → segment-ratio fallback.
+    ///   4. any RECOVERY-VOLUME segment Inconclusive             → Inconclusive (dominates).
+    ///   5. otherwise par2 recoverability: recoverable→Healthy, else DefinitivelyMissing.
+    /// </summary>
+    internal static FileHealthVerdict DecideVerdict(
+        IReadOnlyList<SegmentStatus> statuses,
+        IReadOnlyList<string> segments,
+        Par2RecoverySet? par2Set,
+        Par2SourceFile? sourceRow,
+        int availableRecoveryBlocks,
+        bool anyVolumeInconclusive,
+        double maxMissingRatio)
+    {
+        if (par2Set == null)
+            return SegmentRatioEvaluator.Evaluate(statuses, maxMissingRatio);
+
+        if (statuses.Any(s => s == SegmentStatus.Inconclusive))
+            return FileHealthVerdict.Inconclusive;
+
+        // This dav item isn't a tracked par2 source file → fall back to the ratio path.
+        if (sourceRow == null)
+            return SegmentRatioEvaluator.Evaluate(statuses, maxMissingRatio);
+
+        if (anyVolumeInconclusive)
+            return FileHealthVerdict.Inconclusive;
+
+        var ranges = BuildMissingRanges(segments, statuses, sourceRow, par2Set.SliceSize);
+        var damaged = Par2RecoveryCalculator.CountDamagedSlices(ranges);
+        return Par2RecoveryCalculator.IsRecoverable(damaged, availableRecoveryBlocks)
+            ? FileHealthVerdict.Healthy
+            : FileHealthVerdict.DefinitivelyMissing;
+    }
+
+    /// <summary>
+    /// Map this file's definitively-missing segments to par2 slice ranges, relative to the file's
+    /// <see cref="Par2SourceFile.FirstSliceIndex"/>. No subtype persists per-SEGMENT byte offsets
+    /// (only per-part ranges on Rar/Multipart, which GetAllSegments flattens away), so we
+    /// approximate every segment's size as FileLength/segmentCount uniformly. CountDamagedSlices
+    /// only needs the COUNT of distinct damaged slices, so absolute slice numbering is irrelevant.
+    /// </summary>
+    internal static IReadOnlyCollection<Par2RecoveryCalculator.MissingRange> BuildMissingRanges(
+        IReadOnlyList<string> segments, IReadOnlyList<SegmentStatus> statuses, Par2SourceFile src, long sliceSize)
+    {
+        var ranges = new List<Par2RecoveryCalculator.MissingRange>();
+        var perSegment = segments.Count > 0 ? src.FileLength / segments.Count : 0;
+        if (perSegment <= 0) return ranges;
+        for (var i = 0; i < segments.Count; i++)
+        {
+            if (i >= statuses.Count || statuses[i] != SegmentStatus.DefinitivelyMissing) continue;
+            var byteStart = perSegment * i;
+            ranges.Add(new Par2RecoveryCalculator.MissingRange(src.FirstSliceIndex, sliceSize, byteStart, perSegment));
+        }
+        return ranges;
     }
 
     private async Task UpdateReleaseDate(DavItem davItem, List<string> segments, CancellationToken ct)
