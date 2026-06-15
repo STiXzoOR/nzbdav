@@ -41,6 +41,9 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
     public DbSet<DavCleanupItem> DavCleanupItems => Set<DavCleanupItem>();
     public DbSet<NzbName> NzbNames => Set<NzbName>();
     public DbSet<NzbBlobCleanupItem> NzbBlobCleanupItems => Set<NzbBlobCleanupItem>();
+    public DbSet<Par2RecoverySet> Par2RecoverySets => Set<Par2RecoverySet>();
+    public DbSet<Par2SourceFile> Par2SourceFiles => Set<Par2SourceFile>();
+    public DbSet<Par2RecoveryVolume> Par2RecoveryVolumes => Set<Par2RecoveryVolume>();
 
     // blob items
     public List<DavNzbFile> BlobNzbFiles = [];
@@ -117,6 +120,17 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
                 );
 
             e.Property(i => i.NextHealthCheck)
+                .ValueGeneratedNever()
+                .HasConversion(
+                    x => x.HasValue ? x.Value.ToUnixTimeSeconds() : (long?)null,
+                    x => x.HasValue ? DateTimeOffset.FromUnixTimeSeconds(x.Value) : null
+                );
+
+            e.Property(i => i.HealthCheckFailureCount)
+                .HasDefaultValue(0)
+                .IsRequired();
+
+            e.Property(i => i.FirstFailedHealthCheck)
                 .ValueGeneratedNever()
                 .HasConversion(
                     x => x.HasValue ? x.Value.ToUnixTimeSeconds() : (long?)null,
@@ -500,6 +514,46 @@ public sealed class DavDatabaseContext() : DbContext(Options.Value)
 
             e.Property(i => i.Id)
                 .ValueGeneratedNever();
+        });
+
+        // Par2RecoverySet
+        b.Entity<Par2RecoverySet>(e =>
+        {
+            e.ToTable("Par2RecoverySets");
+            e.HasKey(i => i.Id);
+            e.Property(i => i.Id).ValueGeneratedNever();
+            e.Property(i => i.DirectoryDavItemId).IsRequired();
+            e.Property(i => i.RecoverySetId).IsRequired();
+            e.Property(i => i.SliceSize).IsRequired();
+            e.Property(i => i.TotalRecoveryBlocks).IsRequired();
+            e.HasIndex(i => i.DirectoryDavItemId);
+        });
+
+        // Par2SourceFile
+        b.Entity<Par2SourceFile>(e =>
+        {
+            e.ToTable("Par2SourceFiles");
+            e.HasKey(i => i.Id);
+            e.Property(i => i.Id).ValueGeneratedNever();
+            e.HasIndex(i => i.RecoverySetId);
+            e.HasIndex(i => i.DavItemId);
+        });
+
+        // Par2RecoveryVolume
+        b.Entity<Par2RecoveryVolume>(e =>
+        {
+            e.ToTable("Par2RecoveryVolumes");
+            e.HasKey(i => i.Id);
+            e.Property(i => i.Id).ValueGeneratedNever();
+            e.HasIndex(i => i.RecoverySetId);
+            e.Property(f => f.SegmentIds)
+                .HasConversion(new ValueConverter<string[], string>
+                (
+                    v => JsonSerializer.Serialize(v, (JsonSerializerOptions?)null),
+                    v => JsonSerializer.Deserialize<string[]>(v, (JsonSerializerOptions?)null) ?? Array.Empty<string>()
+                ))
+                .HasColumnType("TEXT") // store raw JSON
+                .IsRequired();
         });
     }
 

@@ -2,6 +2,7 @@ using NzbWebDAV.Clients.Usenet.Models;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Models.Nzb;
+using NzbWebDAV.Services.Repair;
 using NzbWebDAV.Streams;
 using UsenetSharp.Models;
 
@@ -40,6 +41,31 @@ public abstract class NntpClient : INntpClient
         CancellationToken cancellationToken);
 
     public abstract void Dispose();
+
+    public virtual async Task<IReadOnlyList<ProviderStatOutcome>> StatAllProvidersAsync(
+        SegmentId segmentId, CancellationToken ct)
+    {
+        try
+        {
+            var r = await StatAsync(segmentId, ct).ConfigureAwait(false);
+            // Only a genuine 430 means the article is definitively gone. StatAsync does
+            // NOT throw on server-fault/auth codes (Unknown/412/420/480/481/482/502/...);
+            // it returns them as ResponseType values. Treat all of those as TransientError
+            // (rolls up to Inconclusive) so a provider auth lapse or fault never gets
+            // misclassified as a confirmed miss -> false library deletion.
+            var kind = r.ResponseType switch
+            {
+                UsenetResponseType.ArticleExists => ProviderStatOutcome.Kind.Exists,
+                UsenetResponseType.NoArticleWithThatMessageId => ProviderStatOutcome.Kind.DefinitivelyMissing,
+                _ => ProviderStatOutcome.Kind.TransientError,
+            };
+            return new[] { new ProviderStatOutcome(kind) };
+        }
+        catch (Exception e) when (!e.IsCancellationException())
+        {
+            return new[] { new ProviderStatOutcome(ProviderStatOutcome.Kind.TransientError) };
+        }
+    }
 
     public virtual Task<UsenetExclusiveConnection> AcquireExclusiveConnectionAsync
     (

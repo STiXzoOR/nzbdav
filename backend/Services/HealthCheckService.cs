@@ -7,6 +7,7 @@ using NzbWebDAV.Database.Models;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Queue.PostProcessors;
+using NzbWebDAV.Services.Repair;
 using NzbWebDAV.Utils;
 using NzbWebDAV.Websocket;
 using Serilog;
@@ -22,7 +23,8 @@ public class HealthCheckService : BackgroundService
     private readonly INntpClient _usenetClient;
     private readonly WebsocketManager _websocketManager;
 
-    private static readonly HashSet<string> _missingSegmentIds = [];
+    private static readonly Dictionary<string, DateTimeOffset> _missingSegmentIds = new();
+    private static readonly TimeSpan _missingCacheTtl = TimeSpan.FromHours(6);
 
     public HealthCheckService
     (
@@ -114,54 +116,202 @@ public class HealthCheckService : BackgroundService
         CancellationToken ct
     )
     {
-        try
+        var now = DateTimeOffset.UtcNow;
+
+        // (1) minimum-age guard: don't health-check (and possibly delete) very fresh
+        // releases — articles may not have fully propagated across providers yet.
+        if (davItem.ReleaseDate is { } rd && now - rd < _configManager.GetRepairMinimumAge())
         {
-            // update the release date, if null
-            var segments = await GetAllSegments(davItem, dbClient, ct).ConfigureAwait(false);
-            if (davItem.ReleaseDate == null) await UpdateReleaseDate(davItem, segments, ct).ConfigureAwait(false);
-
-
-            // setup progress tracking
-            var progressHook = new Progress<int>();
-            var debounce = DebounceUtil.CreateDebounce(TimeSpan.FromMilliseconds(200));
-            progressHook.ProgressChanged += (_, progress) =>
-            {
-                var message = $"{davItem.Id}|{progress}";
-                debounce(() => _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, message));
-            };
-
-            // perform health check
-            var progress = progressHook.ToPercentage(segments.Count);
-            await _usenetClient.CheckAllSegmentsAsync(segments, concurrency, progress, ct).ConfigureAwait(false);
-            _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|100");
-            _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|done");
-
-            // update the database
-            davItem.LastHealthCheck = DateTimeOffset.UtcNow;
-            davItem.NextHealthCheck = davItem.ReleaseDate + 2 * (davItem.LastHealthCheck - davItem.ReleaseDate);
-            dbClient.Ctx.HealthCheckResults.Add(SendStatus(new HealthCheckResult()
-            {
-                Id = Guid.NewGuid(),
-                DavItemId = davItem.Id,
-                Path = davItem.Path,
-                CreatedAt = DateTimeOffset.UtcNow,
-                Result = HealthCheckResult.HealthResult.Healthy,
-                RepairStatus = HealthCheckResult.RepairAction.None,
-                Message = "File is healthy."
-            }));
+            davItem.LastHealthCheck = now;
+            davItem.NextHealthCheck = now + _configManager.GetRecheckBackoff();
             await dbClient.Ctx.SaveChangesAsync(ct).ConfigureAwait(false);
+            return;
         }
-        catch (UsenetArticleNotFoundException e)
-        {
-            _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|100");
-            _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|done");
-            if (FilenameUtil.IsImportantFileType(davItem.Name))
-                lock (_missingSegmentIds)
-                    _missingSegmentIds.Add(e.SegmentId);
 
-            // when usenet article is missing, perform repairs
-            await Repair(davItem, dbClient, ct).ConfigureAwait(false);
+        // (2) classify every segment across all providers
+        var segments = await GetAllSegments(davItem, dbClient, ct).ConfigureAwait(false);
+        if (davItem.ReleaseDate == null) await UpdateReleaseDate(davItem, segments, ct).ConfigureAwait(false);
+
+        // setup progress tracking (preserve original debounced websocket progress behavior)
+        var debounce = DebounceUtil.CreateDebounce(TimeSpan.FromMilliseconds(200));
+        void ReportProgress(int percent)
+        {
+            var message = $"{davItem.Id}|{percent}";
+            debounce(() => _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, message));
         }
+
+        var statuses = new List<SegmentStatus>(segments.Count);
+        var processed = 0;
+        foreach (var segmentId in segments)
+        {
+            ct.ThrowIfCancellationRequested();
+            var outcomes = await _usenetClient.StatAllProvidersAsync(segmentId, ct).ConfigureAwait(false);
+            statuses.Add(SegmentClassifier.Classify(outcomes));
+            processed++;
+            if (segments.Count > 0) ReportProgress(processed * 100 / segments.Count);
+        }
+        _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|100");
+        _ = _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, $"{davItem.Id}|done");
+
+        // (3) verdict — par2-aware recoverability is the PRIMARY path; segment-ratio is the fallback.
+        //
+        // par2 mapping note (per-subtype byte-range availability):
+        //   - DavNzbFile    : stores only SegmentIds[] with NO per-segment byte sizes.
+        //   - DavRarFile    : RarParts[] carry per-PART byte ranges (Offset/ByteCount) but
+        //                     NOT per-segment ranges (a part flattens to many segments).
+        //   - DavMultipartFile : FileParts[] carry per-PART SegmentIdByteRange/FilePartByteRange
+        //                     but, again, not per-individual-segment ranges.
+        // GetAllSegments flattens every subtype into one positional segment list aligned 1:1 with
+        // `statuses`, discarding the part structure. Since no subtype exposes a clean per-SEGMENT
+        // byte offset (only per-part), we use the equal-size approximation FileLength/segmentCount
+        // uniformly for all subtypes. This is acceptable and bounded: a missing segment damages at
+        // most ceil(perSegment/sliceSize)+1 slices, and the verdict is further gated by the
+        // all-provider STAT, the strike machine, and the minimum-age guard before any deletion.
+        var par2Set = _configManager.IsPar2RecoveryEnabled()
+            ? await dbClient.Ctx.Par2RecoverySets
+                .FirstOrDefaultAsync(s => s.DirectoryDavItemId == davItem.ParentId, ct).ConfigureAwait(false)
+            : null;
+
+        Par2SourceFile? sourceRow = null;
+        if (par2Set != null && statuses.All(s => s != SegmentStatus.Inconclusive))
+        {
+            sourceRow = await dbClient.Ctx.Par2SourceFiles
+                .FirstOrDefaultAsync(f => f.RecoverySetId == par2Set.Id && f.DavItemId == davItem.Id, ct)
+                .ConfigureAwait(false);
+        }
+
+        // STAT the recovery volumes (all-provider) only when we actually have a tracked source file
+        // to recover. Inconclusive on any volume segment must win (never delete on unconfirmed data).
+        var availableRecoveryBlocks = 0;
+        var anyVolumeInconclusive = false;
+        if (par2Set != null && sourceRow != null)
+        {
+            var volumes = await dbClient.Ctx.Par2RecoveryVolumes
+                .Where(v => v.RecoverySetId == par2Set.Id)
+                .ToListAsync(ct).ConfigureAwait(false);
+            var volStatuses = new List<(int BlockCount, bool AllArticlesPresent)>(volumes.Count);
+            foreach (var vol in volumes)
+            {
+                var allPresent = true;
+                foreach (var seg in vol.SegmentIds)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var st = SegmentClassifier.Classify(
+                        await _usenetClient.StatAllProvidersAsync(seg, ct).ConfigureAwait(false));
+                    if (st == SegmentStatus.Inconclusive) { anyVolumeInconclusive = true; allPresent = false; break; }
+                    if (st != SegmentStatus.Present) allPresent = false;
+                }
+                if (anyVolumeInconclusive) break;
+                volStatuses.Add((vol.BlockCount, allPresent));
+            }
+            if (!anyVolumeInconclusive)
+                availableRecoveryBlocks = Par2RecoveryCalculator.AvailableRecoveryBlocks(volStatuses);
+        }
+
+        var verdict = DecideVerdict(
+            statuses, segments, par2Set, sourceRow,
+            availableRecoveryBlocks, anyVolumeInconclusive,
+            _configManager.GetMaxMissingSegmentRatio());
+
+        // (4) strike machine
+        var strike = StrikeMachine.Next(verdict, davItem.HealthCheckFailureCount, davItem.FirstFailedHealthCheck,
+            now, _configManager.GetMinimumFailureWindow(), _configManager.GetRecheckBackoff(),
+            _configManager.GetRequiredConsecutiveFailures());
+
+        // (5) persist strike state + schedule
+        davItem.HealthCheckFailureCount = strike.NewCount;
+        davItem.FirstFailedHealthCheck = strike.NewFirstFailed;
+        davItem.LastHealthCheck = now;
+        davItem.NextHealthCheck = strike.NextCheck;
+
+        // (6) record result row
+        var (res, repairStatus, msg) = verdict switch
+        {
+            FileHealthVerdict.Healthy =>
+                (HealthCheckResult.HealthResult.Healthy, HealthCheckResult.RepairAction.None, "File is healthy."),
+            FileHealthVerdict.Inconclusive =>
+                (HealthCheckResult.HealthResult.Unhealthy, HealthCheckResult.RepairAction.ActionNeeded,
+                 "Inconclusive (provider error/timeout); not actioned, rescheduled."),
+            _ => (HealthCheckResult.HealthResult.Unhealthy, HealthCheckResult.RepairAction.ActionNeeded,
+                 $"Missing articles confirmed (strike {strike.NewCount}/{_configManager.GetRequiredConsecutiveFailures()})."),
+        };
+        dbClient.Ctx.HealthCheckResults.Add(SendStatus(new HealthCheckResult()
+        {
+            Id = Guid.NewGuid(),
+            DavItemId = davItem.Id,
+            Path = davItem.Path,
+            CreatedAt = now,
+            Result = res,
+            RepairStatus = repairStatus,
+            Message = msg,
+        }));
+        await dbClient.Ctx.SaveChangesAsync(ct).ConfigureAwait(false);
+
+        // (7) repair only when confirmed dead across the window
+        if (strike.ShouldRepair)
+            await Repair(davItem, dbClient, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Pure verdict decision (no I/O). The async recovery-volume STAT is performed by the caller
+    /// and threaded in as <paramref name="availableRecoveryBlocks"/>/<paramref name="anyVolumeInconclusive"/>.
+    ///
+    /// Precedence:
+    ///   1. par2 disabled or no recovery set for this directory  → segment-ratio fallback.
+    ///   2. any INPUT segment Inconclusive                       → Inconclusive (dominates; never deletes).
+    ///   3. no par2 source-file row for this dav item            → segment-ratio fallback.
+    ///   4. any RECOVERY-VOLUME segment Inconclusive             → Inconclusive (dominates).
+    ///   5. otherwise par2 recoverability: recoverable→Healthy, else DefinitivelyMissing.
+    /// </summary>
+    internal static FileHealthVerdict DecideVerdict(
+        IReadOnlyList<SegmentStatus> statuses,
+        IReadOnlyList<string> segments,
+        Par2RecoverySet? par2Set,
+        Par2SourceFile? sourceRow,
+        int availableRecoveryBlocks,
+        bool anyVolumeInconclusive,
+        double maxMissingRatio)
+    {
+        if (par2Set == null)
+            return SegmentRatioEvaluator.Evaluate(statuses, maxMissingRatio);
+
+        if (statuses.Any(s => s == SegmentStatus.Inconclusive))
+            return FileHealthVerdict.Inconclusive;
+
+        // This dav item isn't a tracked par2 source file → fall back to the ratio path.
+        if (sourceRow == null)
+            return SegmentRatioEvaluator.Evaluate(statuses, maxMissingRatio);
+
+        if (anyVolumeInconclusive)
+            return FileHealthVerdict.Inconclusive;
+
+        var ranges = BuildMissingRanges(segments, statuses, sourceRow, par2Set.SliceSize);
+        var damaged = Par2RecoveryCalculator.CountDamagedSlices(ranges);
+        return Par2RecoveryCalculator.IsRecoverable(damaged, availableRecoveryBlocks)
+            ? FileHealthVerdict.Healthy
+            : FileHealthVerdict.DefinitivelyMissing;
+    }
+
+    /// <summary>
+    /// Map this file's definitively-missing segments to par2 slice ranges, relative to the file's
+    /// <see cref="Par2SourceFile.FirstSliceIndex"/>. No subtype persists per-SEGMENT byte offsets
+    /// (only per-part ranges on Rar/Multipart, which GetAllSegments flattens away), so we
+    /// approximate every segment's size as FileLength/segmentCount uniformly. CountDamagedSlices
+    /// only needs the COUNT of distinct damaged slices, so absolute slice numbering is irrelevant.
+    /// </summary>
+    internal static IReadOnlyCollection<Par2RecoveryCalculator.MissingRange> BuildMissingRanges(
+        IReadOnlyList<string> segments, IReadOnlyList<SegmentStatus> statuses, Par2SourceFile src, long sliceSize)
+    {
+        var ranges = new List<Par2RecoveryCalculator.MissingRange>();
+        var perSegment = segments.Count > 0 ? src.FileLength / segments.Count : 0;
+        if (perSegment <= 0) return ranges;
+        for (var i = 0; i < segments.Count; i++)
+        {
+            if (i >= statuses.Count || statuses[i] != SegmentStatus.DefinitivelyMissing) continue;
+            var byteStart = perSegment * i;
+            ranges.Add(new Par2RecoveryCalculator.MissingRange(src.FirstSliceIndex, sliceSize, byteStart, perSegment));
+        }
+        return ranges;
     }
 
     private async Task UpdateReleaseDate(DavItem davItem, List<string> segments, CancellationToken ct)
@@ -200,12 +350,18 @@ public class HealthCheckService : BackgroundService
     {
         try
         {
+            // this method is only reached for confirmed-dead files, so any segment
+            // id of this item is now definitively missing. Cache them (with a TTL)
+            // so streaming read-paths fail fast instead of re-hitting dead articles.
+            var deadSegments = await GetAllSegments(davItem, dbClient, ct).ConfigureAwait(false);
+
             // if the file pattern has been marked as ignored,
             // then don't bother trying to repair it. We can simply delete it.
             var blocklistedFiles = _configManager.GetBlocklistedFiles();
             if (BlocklistedFilePostProcessor.MatchesAnyPattern(davItem.Name, blocklistedFiles))
             {
                 dbClient.Ctx.Items.Remove(davItem);
+                CacheMissingSegments(deadSegments);
                 dbClient.Ctx.HealthCheckResults.Add(SendStatus(new HealthCheckResult()
                 {
                     Id = Guid.NewGuid(),
@@ -230,6 +386,7 @@ public class HealthCheckService : BackgroundService
             if (symlinkOrStrmPath == null)
             {
                 dbClient.Ctx.Items.Remove(davItem);
+                CacheMissingSegments(deadSegments);
                 dbClient.Ctx.HealthCheckResults.Add(SendStatus(new HealthCheckResult()
                 {
                     Id = Guid.NewGuid(),
@@ -261,6 +418,7 @@ public class HealthCheckService : BackgroundService
                 if (await arrClient.RemoveAndSearch(symlinkOrStrmPath).ConfigureAwait(false))
                 {
                     dbClient.Ctx.Items.Remove(davItem);
+                    CacheMissingSegments(deadSegments);
                     dbClient.Ctx.HealthCheckResults.Add(SendStatus(new HealthCheckResult()
                     {
                         Id = Guid.NewGuid(),
@@ -290,6 +448,7 @@ public class HealthCheckService : BackgroundService
             // then we can delete both the item and the link-file.
             await Task.Run(() => File.Delete(symlinkOrStrmPath)).ConfigureAwait(false);
             dbClient.Ctx.Items.Remove(davItem);
+            CacheMissingSegments(deadSegments);
             dbClient.Ctx.HealthCheckResults.Add(SendStatus(new HealthCheckResult()
             {
                 Id = Guid.NewGuid(),
@@ -342,9 +501,21 @@ public class HealthCheckService : BackgroundService
     {
         lock (_missingSegmentIds)
         {
+            var now = DateTimeOffset.UtcNow;
             foreach (var segmentId in segmentIds)
-                if (_missingSegmentIds.Contains(segmentId))
-                    throw new UsenetArticleNotFoundException(segmentId);
+                if (_missingSegmentIds.TryGetValue(segmentId, out var ts))
+                {
+                    if (now - ts < _missingCacheTtl) throw new UsenetArticleNotFoundException(segmentId);
+                    _missingSegmentIds.Remove(segmentId); // expired → re-verify on next read
+                }
         }
+    }
+
+    private static void CacheMissingSegments(IEnumerable<string> segmentIds)
+    {
+        var now = DateTimeOffset.UtcNow;
+        lock (_missingSegmentIds)
+            foreach (var id in segmentIds)
+                _missingSegmentIds[id] = now;
     }
 }

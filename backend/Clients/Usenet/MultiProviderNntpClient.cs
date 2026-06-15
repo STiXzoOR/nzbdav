@@ -2,6 +2,7 @@
 using NzbWebDAV.Clients.Usenet.Models;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Models;
+using NzbWebDAV.Services.Repair;
 using Serilog;
 using UsenetSharp.Models;
 
@@ -27,6 +28,39 @@ public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers) 
     public override Task<UsenetHeadResponse> HeadAsync(SegmentId segmentId, CancellationToken cancellationToken)
     {
         return RunFromPoolWithBackup(x => x.HeadAsync(segmentId, cancellationToken), cancellationToken);
+    }
+
+    public override async Task<IReadOnlyList<ProviderStatOutcome>> StatAllProvidersAsync(
+        SegmentId segmentId, CancellationToken ct)
+    {
+        var enabled = providers.Where(p => p.ProviderType != ProviderType.Disabled).ToList();
+        var outcomes = new List<ProviderStatOutcome>(enabled.Count);
+        foreach (var provider in enabled)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var r = await provider.StatAsync(segmentId, ct).ConfigureAwait(false);
+                // Only a genuine 430 means the article is definitively gone. StatAsync does
+                // NOT throw on server-fault/auth codes (Unknown/412/420/480/481/482/502/...);
+                // it returns them as ResponseType values. Treat all of those as TransientError
+                // so a per-provider auth lapse or fault never counts toward all-provider 430
+                // agreement (it rolls up to Inconclusive instead of a confirmed miss).
+                var kind = r.ResponseType switch
+                {
+                    UsenetResponseType.ArticleExists => ProviderStatOutcome.Kind.Exists,
+                    UsenetResponseType.NoArticleWithThatMessageId => ProviderStatOutcome.Kind.DefinitivelyMissing,
+                    _ => ProviderStatOutcome.Kind.TransientError,
+                };
+                outcomes.Add(new ProviderStatOutcome(kind));
+            }
+            catch (Exception e) when (!e.IsCancellationException())
+            {
+                outcomes.Add(new ProviderStatOutcome(ProviderStatOutcome.Kind.TransientError));
+            }
+        }
+
+        return outcomes;
     }
 
     public override Task<UsenetDecodedBodyResponse> DecodedBodyAsync

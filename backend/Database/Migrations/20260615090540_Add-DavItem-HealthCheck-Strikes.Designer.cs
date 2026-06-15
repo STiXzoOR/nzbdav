@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using NzbWebDAV.Database;
 
@@ -10,9 +11,11 @@ using NzbWebDAV.Database;
 namespace NzbWebDAV.Database.Migrations
 {
     [DbContext(typeof(DavDatabaseContext))]
-    partial class DavDatabaseContextModelSnapshot : ModelSnapshot
+    [Migration("20260615090540_Add-DavItem-HealthCheck-Strikes")]
+    partial class AddDavItemHealthCheckStrikes
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.5");
@@ -338,82 +341,6 @@ namespace NzbWebDAV.Database.Migrations
                     b.HasKey("Id");
 
                     b.ToTable("NzbNames", (string)null);
-                });
-
-            modelBuilder.Entity("NzbWebDAV.Database.Models.Par2RecoverySet", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .HasColumnType("TEXT");
-
-                    b.Property<Guid>("DirectoryDavItemId")
-                        .HasColumnType("TEXT");
-
-                    b.Property<byte[]>("RecoverySetId")
-                        .IsRequired()
-                        .HasColumnType("BLOB");
-
-                    b.Property<long>("SliceSize")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<int>("TotalRecoveryBlocks")
-                        .HasColumnType("INTEGER");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("DirectoryDavItemId");
-
-                    b.ToTable("Par2RecoverySets", (string)null);
-                });
-
-            modelBuilder.Entity("NzbWebDAV.Database.Models.Par2RecoveryVolume", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .HasColumnType("TEXT");
-
-                    b.Property<int>("BlockCount")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<Guid>("RecoverySetId")
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("SegmentIds")
-                        .IsRequired()
-                        .HasColumnType("TEXT");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("RecoverySetId");
-
-                    b.ToTable("Par2RecoveryVolumes", (string)null);
-                });
-
-            modelBuilder.Entity("NzbWebDAV.Database.Models.Par2SourceFile", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .HasColumnType("TEXT");
-
-                    b.Property<Guid>("DavItemId")
-                        .HasColumnType("TEXT");
-
-                    b.Property<long>("FileLength")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<int>("FirstSliceIndex")
-                        .HasColumnType("INTEGER");
-
-                    b.Property<Guid>("RecoverySetId")
-                        .HasColumnType("TEXT");
-
-                    b.Property<int>("SliceCount")
-                        .HasColumnType("INTEGER");
-
-                    b.HasKey("Id");
-
-                    b.HasIndex("DavItemId");
-
-                    b.HasIndex("RecoverySetId");
-
-                    b.ToTable("Par2SourceFiles", (string)null);
                 });
 
             modelBuilder.Entity("NzbWebDAV.Database.Models.QueueItem", b =>

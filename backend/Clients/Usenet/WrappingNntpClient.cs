@@ -19,6 +19,10 @@ public class WrappingNntpClient(INntpClient usenetClient) : NntpClient
         SegmentId segmentId, CancellationToken cancellationToken) =>
         _usenetClient.StatAsync(segmentId, cancellationToken);
 
+    public override Task<IReadOnlyList<NzbWebDAV.Services.Repair.ProviderStatOutcome>> StatAllProvidersAsync(
+        SegmentId segmentId, CancellationToken ct) =>
+        _usenetClient.StatAllProvidersAsync(segmentId, ct);
+
     public override Task<UsenetHeadResponse> HeadAsync(
         SegmentId segmentId, CancellationToken cancellationToken) =>
         _usenetClient.HeadAsync(segmentId, cancellationToken);

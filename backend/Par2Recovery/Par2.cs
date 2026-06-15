@@ -41,6 +41,29 @@ namespace NzbWebDAV.Par2Recovery
             }
         }
 
+        public static async IAsyncEnumerable<Par2Packet> ReadAllPackets
+        (
+            Stream stream,
+            [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default
+        )
+        {
+            while (stream.Position < stream.Length && !ct.IsCancellationRequested)
+            {
+                Par2Packet packet;
+                try
+                {
+                    packet = await ReadPacketAsync(stream).ConfigureAwait(false);
+                }
+                catch (Exception e)
+                {
+                    Log.Warning($"Failed to read par2 packet: {e.Message}");
+                    yield break;
+                }
+
+                yield return packet;
+            }
+        }
+
         private static async Task<Par2Packet> ReadPacketAsync(Stream stream)
         {
             // Read a Packet Header.
@@ -58,6 +81,9 @@ namespace NzbWebDAV.Par2Recovery
             {
                 case FileDesc.PacketType:
                     result = new FileDesc(header);
+                    break;
+                case MainPacket.PacketType:
+                    result = new MainPacket(header);
                     break;
                 default:
                     result = new Par2Packet(header);

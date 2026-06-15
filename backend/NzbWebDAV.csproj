@@ -8,6 +8,10 @@
     </PropertyGroup>
 
     <ItemGroup>
+      <InternalsVisibleTo Include="backend.Tests" />
+    </ItemGroup>
+
+    <ItemGroup>
       <PackageReference Include="MemoryPack" Version="1.21.4" />
       <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.5" />
       <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.5">
