@@ -195,12 +195,6 @@ public class ConfigManager
                && GetArrConfig().GetInstanceCount() > 0;
     }
 
-    public bool IsRequireAllProvidersEnabled()
-    {
-        var v = StringUtil.EmptyToNull(GetConfigValue("repair.require-all-providers"));
-        return v != null ? bool.Parse(v) : true;
-    }
-
     public bool IsPar2RecoveryEnabled()
     {
         var v = StringUtil.EmptyToNull(GetConfigValue("repair.use-par2-recovery"));
