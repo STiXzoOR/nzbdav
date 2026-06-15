@@ -186,6 +186,15 @@ public class QueueItemProcessor(
 
             // post-processing
             new RenameDuplicatesPostProcessor(dbClient).RenameDuplicates();
+
+            // Capture & persist the par2 recovery model BEFORE the blocklist deletes the
+            // *.par2 DavItems (and their DavNzbFile.SegmentIds) from the change tracker.
+            // mountFolder is the release directory the arrs import from; its Id is the key the
+            // health-check task later uses to find the recovery set (by source file's ParentId).
+            await new Par2RecoveryPostProcessor(dbClient, usenetClient)
+                .PersistRecoveryModel(mountFolder.Id, ct)
+                .ConfigureAwait(false);
+
             new BlocklistedFilePostProcessor(configManager, dbClient).RemoveBlocklistedFiles();
 
             // Always-on guard: if no DavItem files (only the mount directory) ended up in the
