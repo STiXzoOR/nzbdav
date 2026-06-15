@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.11](https://github.com/STiXzoOR/nzbdav/compare/v0.6.10...v0.6.11) (2026-06-15)
+
+
+### Bug Fixes
+
+* **repair:** per-STAT timeout + bounded-concurrency health check ([cd24c3b](https://github.com/STiXzoOR/nzbdav/commit/cd24c3b45819e1591fc559c7cb26c5b0242c0c72))
+
 ## [0.6.10](https://github.com/STiXzoOR/nzbdav/compare/v0.6.9...v0.6.10) (2026-06-15)
 
 
