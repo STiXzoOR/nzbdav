@@ -23,7 +23,8 @@ public class HealthCheckService : BackgroundService
     private readonly INntpClient _usenetClient;
     private readonly WebsocketManager _websocketManager;
 
-    private static readonly HashSet<string> _missingSegmentIds = [];
+    private static readonly Dictionary<string, DateTimeOffset> _missingSegmentIds = new();
+    private static readonly TimeSpan _missingCacheTtl = TimeSpan.FromHours(6);
 
     public HealthCheckService
     (
@@ -230,12 +231,18 @@ public class HealthCheckService : BackgroundService
     {
         try
         {
+            // this method is only reached for confirmed-dead files, so any segment
+            // id of this item is now definitively missing. Cache them (with a TTL)
+            // so streaming read-paths fail fast instead of re-hitting dead articles.
+            var deadSegments = await GetAllSegments(davItem, dbClient, ct).ConfigureAwait(false);
+
             // if the file pattern has been marked as ignored,
             // then don't bother trying to repair it. We can simply delete it.
             var blocklistedFiles = _configManager.GetBlocklistedFiles();
             if (BlocklistedFilePostProcessor.MatchesAnyPattern(davItem.Name, blocklistedFiles))
             {
                 dbClient.Ctx.Items.Remove(davItem);
+                CacheMissingSegments(deadSegments);
                 dbClient.Ctx.HealthCheckResults.Add(SendStatus(new HealthCheckResult()
                 {
                     Id = Guid.NewGuid(),
@@ -260,6 +267,7 @@ public class HealthCheckService : BackgroundService
             if (symlinkOrStrmPath == null)
             {
                 dbClient.Ctx.Items.Remove(davItem);
+                CacheMissingSegments(deadSegments);
                 dbClient.Ctx.HealthCheckResults.Add(SendStatus(new HealthCheckResult()
                 {
                     Id = Guid.NewGuid(),
@@ -291,6 +299,7 @@ public class HealthCheckService : BackgroundService
                 if (await arrClient.RemoveAndSearch(symlinkOrStrmPath).ConfigureAwait(false))
                 {
                     dbClient.Ctx.Items.Remove(davItem);
+                    CacheMissingSegments(deadSegments);
                     dbClient.Ctx.HealthCheckResults.Add(SendStatus(new HealthCheckResult()
                     {
                         Id = Guid.NewGuid(),
@@ -320,6 +329,7 @@ public class HealthCheckService : BackgroundService
             // then we can delete both the item and the link-file.
             await Task.Run(() => File.Delete(symlinkOrStrmPath)).ConfigureAwait(false);
             dbClient.Ctx.Items.Remove(davItem);
+            CacheMissingSegments(deadSegments);
             dbClient.Ctx.HealthCheckResults.Add(SendStatus(new HealthCheckResult()
             {
                 Id = Guid.NewGuid(),
@@ -372,9 +382,21 @@ public class HealthCheckService : BackgroundService
     {
         lock (_missingSegmentIds)
         {
+            var now = DateTimeOffset.UtcNow;
             foreach (var segmentId in segmentIds)
-                if (_missingSegmentIds.Contains(segmentId))
-                    throw new UsenetArticleNotFoundException(segmentId);
+                if (_missingSegmentIds.TryGetValue(segmentId, out var ts))
+                {
+                    if (now - ts < _missingCacheTtl) throw new UsenetArticleNotFoundException(segmentId);
+                    _missingSegmentIds.Remove(segmentId); // expired → re-verify on next read
+                }
         }
+    }
+
+    private static void CacheMissingSegments(IEnumerable<string> segmentIds)
+    {
+        var now = DateTimeOffset.UtcNow;
+        lock (_missingSegmentIds)
+            foreach (var id in segmentIds)
+                _missingSegmentIds[id] = now;
     }
 }
