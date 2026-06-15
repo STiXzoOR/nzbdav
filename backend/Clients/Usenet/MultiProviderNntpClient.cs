@@ -2,6 +2,7 @@
 using NzbWebDAV.Clients.Usenet.Models;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Models;
+using NzbWebDAV.Services.Repair;
 using Serilog;
 using UsenetSharp.Models;
 
@@ -27,6 +28,31 @@ public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers) 
     public override Task<UsenetHeadResponse> HeadAsync(SegmentId segmentId, CancellationToken cancellationToken)
     {
         return RunFromPoolWithBackup(x => x.HeadAsync(segmentId, cancellationToken), cancellationToken);
+    }
+
+    public override async Task<IReadOnlyList<ProviderStatOutcome>> StatAllProvidersAsync(
+        SegmentId segmentId, CancellationToken ct)
+    {
+        var enabled = providers.Where(p => p.ProviderType != ProviderType.Disabled).ToList();
+        var outcomes = new List<ProviderStatOutcome>(enabled.Count);
+        foreach (var provider in enabled)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var r = await provider.StatAsync(segmentId, ct).ConfigureAwait(false);
+                outcomes.Add(new ProviderStatOutcome(
+                    r.ResponseType == UsenetResponseType.ArticleExists
+                        ? ProviderStatOutcome.Kind.Exists
+                        : ProviderStatOutcome.Kind.DefinitivelyMissing));
+            }
+            catch (Exception e) when (!e.IsCancellationException())
+            {
+                outcomes.Add(new ProviderStatOutcome(ProviderStatOutcome.Kind.TransientError));
+            }
+        }
+
+        return outcomes;
     }
 
     public override Task<UsenetDecodedBodyResponse> DecodedBodyAsync

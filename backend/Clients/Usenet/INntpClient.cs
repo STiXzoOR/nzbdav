@@ -17,6 +17,14 @@ public interface INntpClient : IDisposable
     Task<UsenetStatResponse> StatAsync(
         SegmentId segmentId, CancellationToken cancellationToken);
 
+    /// <summary>
+    /// STAT a single segment against EVERY enabled provider (including circuit-broken
+    /// ones — this is a low-priority background confirmation). Returns one outcome per
+    /// provider; a thrown timeout/connection error becomes a TransientError outcome.
+    /// </summary>
+    Task<IReadOnlyList<NzbWebDAV.Services.Repair.ProviderStatOutcome>> StatAllProvidersAsync(
+        SegmentId segmentId, CancellationToken ct);
+
     Task<UsenetHeadResponse> HeadAsync(
         SegmentId segmentId, CancellationToken cancellationToken);
 

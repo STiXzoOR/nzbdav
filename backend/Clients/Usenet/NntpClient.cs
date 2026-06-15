@@ -2,6 +2,7 @@ using NzbWebDAV.Clients.Usenet.Models;
 using NzbWebDAV.Exceptions;
 using NzbWebDAV.Extensions;
 using NzbWebDAV.Models.Nzb;
+using NzbWebDAV.Services.Repair;
 using NzbWebDAV.Streams;
 using UsenetSharp.Models;
 
@@ -40,6 +41,23 @@ public abstract class NntpClient : INntpClient
         CancellationToken cancellationToken);
 
     public abstract void Dispose();
+
+    public virtual async Task<IReadOnlyList<ProviderStatOutcome>> StatAllProvidersAsync(
+        SegmentId segmentId, CancellationToken ct)
+    {
+        try
+        {
+            var r = await StatAsync(segmentId, ct).ConfigureAwait(false);
+            var kind = r.ResponseType == UsenetResponseType.ArticleExists
+                ? ProviderStatOutcome.Kind.Exists
+                : ProviderStatOutcome.Kind.DefinitivelyMissing;
+            return new[] { new ProviderStatOutcome(kind) };
+        }
+        catch (Exception e) when (!e.IsCancellationException())
+        {
+            return new[] { new ProviderStatOutcome(ProviderStatOutcome.Kind.TransientError) };
+        }
+    }
 
     public virtual Task<UsenetExclusiveConnection> AcquireExclusiveConnectionAsync
     (
