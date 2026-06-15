@@ -140,13 +140,22 @@ public class HealthCheckService : BackgroundService
             debounce(() => _websocketManager.SendMessage(WebsocketTopic.HealthItemProgress, message));
         }
 
-        var statuses = new List<SegmentStatus>(segments.Count);
+        // STAT every input segment across all providers, bounded by the provider pool size so a
+        // single hung STAT can't stall the whole loop (a per-STAT timeout turns a hung read into a
+        // TransientError -> Inconclusive). WithConcurrencyAsync yields results OUT OF ORDER, so each
+        // result carries its original index and is placed back at statuses[i] to preserve the
+        // segments[i] <-> statuses[i] alignment that BuildMissingRanges' par2 byte-mapping depends on.
+        var statTimeout = _configManager.GetStatTimeout();
+        var statuses = new SegmentStatus[segments.Count];
         var processed = 0;
-        foreach (var segmentId in segments)
+        var indexed = segments.Select(async (segmentId, i) =>
         {
-            ct.ThrowIfCancellationRequested();
-            var outcomes = await _usenetClient.StatAllProvidersAsync(segmentId, ct).ConfigureAwait(false);
-            statuses.Add(SegmentClassifier.Classify(outcomes));
+            var outcomes = await _usenetClient.StatAllProvidersAsync(segmentId, statTimeout, ct).ConfigureAwait(false);
+            return (Index: i, Status: SegmentClassifier.Classify(outcomes));
+        });
+        await foreach (var r in indexed.WithConcurrencyAsync(Math.Max(1, concurrency)).ConfigureAwait(false))
+        {
+            statuses[r.Index] = r.Status;
             processed++;
             if (segments.Count > 0) ReportProgress(processed * 100 / segments.Count);
         }
@@ -197,7 +206,7 @@ public class HealthCheckService : BackgroundService
                 {
                     ct.ThrowIfCancellationRequested();
                     var st = SegmentClassifier.Classify(
-                        await _usenetClient.StatAllProvidersAsync(seg, ct).ConfigureAwait(false));
+                        await _usenetClient.StatAllProvidersAsync(seg, statTimeout, ct).ConfigureAwait(false));
                     if (st == SegmentStatus.Inconclusive) { anyVolumeInconclusive = true; allPresent = false; break; }
                     if (st != SegmentStatus.Present) allPresent = false;
                 }

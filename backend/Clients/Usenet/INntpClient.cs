@@ -21,9 +21,13 @@ public interface INntpClient : IDisposable
     /// STAT a single segment against EVERY enabled provider (including circuit-broken
     /// ones — this is a low-priority background confirmation). Returns one outcome per
     /// provider; a thrown timeout/connection error becomes a TransientError outcome.
+    /// Each per-provider STAT is bounded by <paramref name="statTimeout"/> so a hung read
+    /// (connection-pool starvation / uncancelled socket) becomes a TransientError instead
+    /// of blocking the caller's per-segment loop. The outer <paramref name="ct"/> still
+    /// propagates a real cancellation.
     /// </summary>
     Task<IReadOnlyList<NzbWebDAV.Services.Repair.ProviderStatOutcome>> StatAllProvidersAsync(
-        SegmentId segmentId, CancellationToken ct);
+        SegmentId segmentId, TimeSpan statTimeout, CancellationToken ct);
 
     Task<UsenetHeadResponse> HeadAsync(
         SegmentId segmentId, CancellationToken cancellationToken);
