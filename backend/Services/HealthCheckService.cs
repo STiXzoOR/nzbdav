@@ -147,6 +147,9 @@ public class HealthCheckService : BackgroundService
         // segments[i] <-> statuses[i] alignment that BuildMissingRanges' par2 byte-mapping depends on.
         var statTimeout = _configManager.GetStatTimeout();
         var statuses = new SegmentStatus[segments.Count];
+        // Fail safe: default any (never-expected) unwritten slot to Inconclusive so it can
+        // never read as Present/Missing and influence a deletion. Every index is written below.
+        Array.Fill(statuses, SegmentStatus.Inconclusive);
         var processed = 0;
         var indexed = segments.Select(async (segmentId, i) =>
         {
