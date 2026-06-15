@@ -32,8 +32,9 @@ public class StatAllProvidersAsyncTests
     }
 
     [Fact]
-    public async Task NonExistsResponse_MapsToDefinitivelyMissing()
+    public async Task NoArticleWithThatMessageId_430_MapsToDefinitivelyMissing()
     {
+        // 430 is the ONLY response code that confirms the article is gone.
         var client = new FakeNntpClient(_ => new UsenetStatResponse
         {
             ArticleExists = false,
@@ -45,6 +46,31 @@ public class StatAllProvidersAsyncTests
 
         Assert.Single(outcomes);
         Assert.Equal(ProviderStatOutcome.Kind.DefinitivelyMissing, outcomes[0].Result);
+    }
+
+    // A non-430 non-exists response (server fault / auth/permission code) must NOT be
+    // treated as a confirmed miss -- StatAsync returns these as ResponseType values
+    // without throwing, and counting them as DefinitivelyMissing is a false-deletion path.
+    // These cases FAIL before the fix (old mapping: != ArticleExists => DefinitivelyMissing).
+    [Theory]
+    [InlineData(502, "502 access permanently forbidden")] // AccessPermanentlyForbidden
+    [InlineData(480, "480 authentication required")]       // AuthenticationRequired
+    [InlineData(481, "481 authentication rejected")]       // AuthenticationRejected
+    [InlineData(412, "412 no newsgroup selected")]         // NoGroupSelected
+    [InlineData(420, "420 current article number is invalid")] // CurrentArticleInvalid
+    public async Task NonExistsFaultCode_MapsToTransientError(int responseCode, string message)
+    {
+        var client = new FakeNntpClient(_ => new UsenetStatResponse
+        {
+            ArticleExists = false,
+            ResponseCode = responseCode,
+            ResponseMessage = message,
+        });
+
+        var outcomes = await client.StatAllProvidersAsync("seg", CancellationToken.None);
+
+        Assert.Single(outcomes);
+        Assert.Equal(ProviderStatOutcome.Kind.TransientError, outcomes[0].Result);
     }
 
     [Fact]

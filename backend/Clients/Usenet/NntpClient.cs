@@ -48,9 +48,17 @@ public abstract class NntpClient : INntpClient
         try
         {
             var r = await StatAsync(segmentId, ct).ConfigureAwait(false);
-            var kind = r.ResponseType == UsenetResponseType.ArticleExists
-                ? ProviderStatOutcome.Kind.Exists
-                : ProviderStatOutcome.Kind.DefinitivelyMissing;
+            // Only a genuine 430 means the article is definitively gone. StatAsync does
+            // NOT throw on server-fault/auth codes (Unknown/412/420/480/481/482/502/...);
+            // it returns them as ResponseType values. Treat all of those as TransientError
+            // (rolls up to Inconclusive) so a provider auth lapse or fault never gets
+            // misclassified as a confirmed miss -> false library deletion.
+            var kind = r.ResponseType switch
+            {
+                UsenetResponseType.ArticleExists => ProviderStatOutcome.Kind.Exists,
+                UsenetResponseType.NoArticleWithThatMessageId => ProviderStatOutcome.Kind.DefinitivelyMissing,
+                _ => ProviderStatOutcome.Kind.TransientError,
+            };
             return new[] { new ProviderStatOutcome(kind) };
         }
         catch (Exception e) when (!e.IsCancellationException())

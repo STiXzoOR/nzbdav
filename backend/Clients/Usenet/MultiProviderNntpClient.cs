@@ -41,10 +41,18 @@ public class MultiProviderNntpClient(List<MultiConnectionNntpClient> providers) 
             try
             {
                 var r = await provider.StatAsync(segmentId, ct).ConfigureAwait(false);
-                outcomes.Add(new ProviderStatOutcome(
-                    r.ResponseType == UsenetResponseType.ArticleExists
-                        ? ProviderStatOutcome.Kind.Exists
-                        : ProviderStatOutcome.Kind.DefinitivelyMissing));
+                // Only a genuine 430 means the article is definitively gone. StatAsync does
+                // NOT throw on server-fault/auth codes (Unknown/412/420/480/481/482/502/...);
+                // it returns them as ResponseType values. Treat all of those as TransientError
+                // so a per-provider auth lapse or fault never counts toward all-provider 430
+                // agreement (it rolls up to Inconclusive instead of a confirmed miss).
+                var kind = r.ResponseType switch
+                {
+                    UsenetResponseType.ArticleExists => ProviderStatOutcome.Kind.Exists,
+                    UsenetResponseType.NoArticleWithThatMessageId => ProviderStatOutcome.Kind.DefinitivelyMissing,
+                    _ => ProviderStatOutcome.Kind.TransientError,
+                };
+                outcomes.Add(new ProviderStatOutcome(kind));
             }
             catch (Exception e) when (!e.IsCancellationException())
             {
