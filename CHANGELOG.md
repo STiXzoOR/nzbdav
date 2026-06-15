@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.10](https://github.com/STiXzoOR/nzbdav/compare/v0.6.9...v0.6.10) (2026-06-15)
+
+
+### Features
+
+* **repair:** flap-tolerant, par2-aware repair job safe to leave enabled ([09471a8](https://github.com/STiXzoOR/nzbdav/commit/09471a80f6f82b436b67c442f0edd4514eafad81))
+
 ## [0.6.9](https://github.com/STiXzoOR/nzbdav/compare/v0.6.8...v0.6.9) (2026-05-24)
 
 
