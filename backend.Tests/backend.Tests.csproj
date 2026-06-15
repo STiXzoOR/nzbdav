@@ -14,4 +14,7 @@
   <ItemGroup>
     <ProjectReference Include="../backend/NzbWebDAV.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="Par2/fixtures/**" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>
