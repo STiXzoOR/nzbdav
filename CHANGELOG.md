@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.12](https://github.com/STiXzoOR/nzbdav/compare/v0.6.11...v0.6.12) (2026-06-16)
+
+
+### Bug Fixes
+
+* **queue:** make grab-time article-existence gate flap-tolerant ([#14](https://github.com/STiXzoOR/nzbdav/issues/14)) ([5487783](https://github.com/STiXzoOR/nzbdav/commit/54877835d099cb8da0b9e9e7e8e2077f3a07e32f))
+
 ## [0.6.11](https://github.com/STiXzoOR/nzbdav/compare/v0.6.10...v0.6.11) (2026-06-15)
 
 
