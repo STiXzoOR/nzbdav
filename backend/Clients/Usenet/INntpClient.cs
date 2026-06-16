@@ -74,5 +74,6 @@ public interface INntpClient : IDisposable
         string[] segmentIds, long fileSize, int articleBufferSize);
 
     Task CheckAllSegmentsAsync(
-        IEnumerable<string> segmentIds, int concurrency, IProgress<int>? progress, CancellationToken cancellationToken);
+        IEnumerable<string> segmentIds, int concurrency, TimeSpan statTimeout, double maxMissingRatio,
+        IProgress<int>? progress, CancellationToken cancellationToken);
 }

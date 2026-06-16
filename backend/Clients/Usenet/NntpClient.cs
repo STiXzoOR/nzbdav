@@ -142,27 +142,32 @@ public abstract class NntpClient : INntpClient
     (
         IEnumerable<string> segmentIds,
         int concurrency,
+        TimeSpan statTimeout,
+        double maxMissingRatio,
         IProgress<int>? progress,
         CancellationToken cancellationToken
     )
     {
-        using var childCt = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var token = childCt.Token;
-
-        var tasks = segmentIds
+        // STAT every segment across ALL providers (per-STAT timeout => TransientError, never a
+        // false miss) and classify. Unlike the old fail-fast path, we must evaluate the WHOLE set
+        // before deciding: a single Inconclusive (flap) anywhere flips the verdict to a pass, so we
+        // cannot short-circuit on the first missing segment. Order is irrelevant to the ratio verdict.
+        var results = new List<(string SegmentId, SegmentStatus Status)>();
+        var processed = 0;
+        var indexed = segmentIds
             .Select(async segmentId => (
                 SegmentId: segmentId,
-                Result: await StatAsync(segmentId, token).ConfigureAwait(false)
-            ))
-            .WithConcurrencyAsync(concurrency);
+                Status: SegmentClassifier.Classify(
+                    await StatAllProvidersAsync(segmentId, statTimeout, cancellationToken).ConfigureAwait(false))
+            ));
 
-        var processed = 0;
-        await foreach (var task in tasks.ConfigureAwait(false))
+        await foreach (var r in indexed.WithConcurrencyAsync(Math.Max(1, concurrency)).ConfigureAwait(false))
         {
+            results.Add(r);
             progress?.Report(++processed);
-            if (task.Result.ResponseType == UsenetResponseType.ArticleExists) continue;
-            await childCt.CancelAsync().ConfigureAwait(false);
-            throw new UsenetArticleNotFoundException(task.SegmentId);
         }
+
+        var fatal = GrabHealthEvaluator.FirstFatalSegment(results, maxMissingRatio);
+        if (fatal != null) throw new UsenetArticleNotFoundException(fatal);
     }
 }
