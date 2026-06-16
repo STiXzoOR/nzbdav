@@ -168,7 +168,10 @@ public class QueueItemProcessor(
                 .GetUsenetProviderConfig()
                 .TotalPooledConnections;
             await usenetClient
-                .CheckAllSegmentsAsync(articlesToCheck, healthCheckConcurrency, part3Progress, ct)
+                .CheckAllSegmentsAsync(
+                    articlesToCheck, healthCheckConcurrency,
+                    configManager.GetStatTimeout(), configManager.GetMaxMissingSegmentRatio(),
+                    part3Progress, ct)
                 .ConfigureAwait(false);
             checkedFullHealth = true;
         }
