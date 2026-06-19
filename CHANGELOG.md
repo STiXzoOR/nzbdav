@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.13](https://github.com/STiXzoOR/nzbdav/compare/v0.6.12...v0.6.13) (2026-06-19)
+
+
+### Features
+
+* **queue:** live pagination + Add-NZB dialog (replace 100-item bandaid) ([3e6e845](https://github.com/STiXzoOR/nzbdav/commit/3e6e84532cf0d3651459ebf9c6e89cbf76cf4920))
+
 ## [0.6.12](https://github.com/STiXzoOR/nzbdav/compare/v0.6.11...v0.6.12) (2026-06-16)
 
 
