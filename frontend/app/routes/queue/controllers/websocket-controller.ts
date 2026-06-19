@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react";
+import { useEffect, useRef } from "react";
 import type { HistoryEvents, QueueEvents } from "./events-controller";
 import { receiveMessage } from "~/utils/websocket-util";
 import { getWebsocketUrl } from "~/utils/url-base";
@@ -24,41 +24,41 @@ const topicSubscriptions = {
 export function initializeQueueHistoryWebsocket(
     queueEvents: QueueEvents,
     historyEvents: HistoryEvents,
-    disableLiveView: boolean,
+    queueLive: boolean,
+    historyLive: boolean,
 ) {
-    const onWebsocketMessage = useCallback((topic: string, message: string) => {
-        if (disableLiveView) return;
-        if (topic == topicNames.queueItemAdded)
-            queueEvents.onAddQueueSlot(JSON.parse(message));
-        else if (topic == topicNames.queueItemRemoved)
-            queueEvents.onRemoveQueueSlots(new Set<string>(message.split(',')));
-        else if (topic == topicNames.queueItemStatus)
-            queueEvents.onChangeQueueSlotStatus(message);
-        else if (topic == topicNames.queueItemPercentage)
-            queueEvents.onChangeQueueSlotPercentage(message);
-        else if (topic == topicNames.historyItemAdded)
-            historyEvents.onAddHistorySlot(JSON.parse(message));
-        else if (topic == topicNames.historyItemRemoved)
-            historyEvents.onRemoveHistorySlots(new Set<string>(message.split(',')));
-    }, [
-        queueEvents,
-        historyEvents,
-        disableLiveView
-    ]);
+    // Keep the latest handler in a ref so the socket connects once and never
+    // reconnects when the live flags or handlers change (e.g. on page navigation).
+    const handlerRef = useRef<(topic: string, message: string) => void>(() => { });
+    handlerRef.current = (topic: string, message: string) => {
+        if (topic == topicNames.queueItemAdded) {
+            if (queueLive) queueEvents.onAddQueueSlot(JSON.parse(message));
+        } else if (topic == topicNames.queueItemRemoved) {
+            if (queueLive) queueEvents.onRemoveQueueSlots(new Set<string>(message.split(',')));
+        } else if (topic == topicNames.queueItemStatus) {
+            if (queueLive) queueEvents.onChangeQueueSlotStatus(message);
+        } else if (topic == topicNames.queueItemPercentage) {
+            if (queueLive) queueEvents.onChangeQueueSlotPercentage(message);
+        } else if (topic == topicNames.historyItemAdded) {
+            if (historyLive) historyEvents.onAddHistorySlot(JSON.parse(message));
+        } else if (topic == topicNames.historyItemRemoved) {
+            if (historyLive) historyEvents.onRemoveHistorySlots(new Set<string>(message.split(',')));
+        }
+    };
 
     useEffect(() => {
-        if (disableLiveView) return;
         let ws: WebSocket;
         let disposed = false;
+        const onMessage = receiveMessage((topic: string, message: string) => handlerRef.current(topic, message));
         function connect() {
             ws = new WebSocket(getWebsocketUrl());
-            ws.onmessage = receiveMessage(onWebsocketMessage);
-            ws.onopen = () => { ws.send(JSON.stringify(topicSubscriptions)); }
+            ws.onmessage = onMessage;
+            ws.onopen = () => { ws.send(JSON.stringify(topicSubscriptions)); };
             ws.onclose = () => { !disposed && setTimeout(() => connect(), 1000); };
             ws.onerror = () => { ws.close() };
-            return () => { disposed = true; ws.close(); }
         }
-
-        return connect();
-    }, [onWebsocketMessage, disableLiveView]);
+        connect();
+        return () => { disposed = true; ws.close(); };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
 }

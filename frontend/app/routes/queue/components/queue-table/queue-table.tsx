@@ -1,4 +1,5 @@
 import { ActionButton } from "../action-button/action-button"
+import { Button } from "react-bootstrap";
 import { memo, useCallback, useMemo, useState } from "react"
 import { ConfirmModal } from "~/components/confirm-modal/confirm-modal"
 import type { PresentationQueueSlot } from "../../route"
@@ -21,6 +22,7 @@ export type QueueTableProps = {
     onIsRemovingChanged: (nzo_ids: Set<string>, isRemoving: boolean) => void,
     onRemoved: (nzo_ids: Set<string>) => void,
     onUploadClicked?: () => void;
+    onAddClicked?: () => void;
 }
 
 export function QueueTable({
@@ -32,6 +34,7 @@ export function QueueTable({
     onIsRemovingChanged,
     onRemoved,
     onUploadClicked,
+    onAddClicked,
 }: QueueTableProps) {
     const [isConfirmingRemoval, setIsConfirmingRemoval] = useState(false);
     var selectedCount = queueSlots.filter(x => !!x.isSelected).length;
@@ -105,6 +108,9 @@ export function QueueTable({
             <h3 onClick={onUploadClicked} style={{ cursor: 'pointer' }}>
                 Queue
             </h3>
+            <Button size="sm" variant="outline-secondary" onClick={onAddClicked}>
+                Add NZB
+            </Button>
             {headerCheckboxState !== 'none' &&
                 <ActionButton type="delete" onClick={onRemove} />
             }

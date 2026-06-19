@@ -21,13 +21,19 @@ export type HistoryEvents = {
 export function useQueueEvents(
     setUploadingFiles: (value: React.SetStateAction<UploadingFile[]>) => void,
     setQueueSlots: (value: React.SetStateAction<PresentationQueueSlot[]>) => void,
-    uploadQueueRef: React.RefObject<UploadingFile[]>
+    uploadQueueRef: React.RefObject<UploadingFile[]>,
+    setQueueTotal: (value: React.SetStateAction<number>) => void,
+    pageSizeRef: React.RefObject<number>,
+    scheduleBackfill: () => void,
 ) {
     const onAddQueueSlot = useCallback((queueSlot: QueueSlot) => {
         uploadQueueRef.current = uploadQueueRef.current.filter(x => x.queueSlot.status === "uploading" || x.queueSlot.filename !== queueSlot.filename);
         setUploadingFiles(files => files.filter(f => f.queueSlot.filename !== queueSlot.filename));
-        setQueueSlots(slots => [...slots, queueSlot]);
-    }, [setQueueSlots]);
+        setQueueTotal(t => t + 1);
+        // New queue items land at the back of the queue, so they are only visible
+        // on page 1 when the whole queue still fits on it.
+        setQueueSlots(slots => slots.length < pageSizeRef.current ? [...slots, queueSlot] : slots);
+    }, [setQueueSlots, setQueueTotal]);
 
     const onSelectQueueSlots = useCallback((ids: Set<string>, isSelected: boolean) => {
         setUploadingFiles(files => files.map(x => ids.has(x.queueSlot.nzo_id) ? { ...x, queueSlot: { ...x.queueSlot, isSelected } } : x));
@@ -42,7 +48,13 @@ export function useQueueEvents(
         uploadQueueRef.current = uploadQueueRef.current.filter(x => x.queueSlot.status === "uploading" || !ids.has(x.queueSlot.nzo_id));
         setUploadingFiles(files => files.filter(x => x.queueSlot.status === "uploading" || !ids.has(x.queueSlot.nzo_id)));
         setQueueSlots(slots => slots.filter(x => !ids.has(x.nzo_id)));
-    }, [setQueueSlots]);
+        // Only server-side rows count toward `total`; optimistic upload rows
+        // (nzo_id prefixed "upload-") are tracked separately.
+        const removedServerCount = Array.from(ids).filter(id => !id.startsWith("upload-")).length;
+        if (removedServerCount > 0) setQueueTotal(t => Math.max(0, t - removedServerCount));
+        // Re-sync page 1 (slots + authoritative total) after items drain off the front.
+        scheduleBackfill();
+    }, [setQueueSlots, setQueueTotal, scheduleBackfill]);
 
     const onChangeQueueSlotStatus = useCallback((message: string) => {
         const [nzo_id, status] = message.split('|');
@@ -65,11 +77,16 @@ export function useQueueEvents(
 }
 
 export function useHistoryEvents(
-    setHistorySlots: (value: React.SetStateAction<PresentationHistorySlot[]>) => void
+    setHistorySlots: (value: React.SetStateAction<PresentationHistorySlot[]>) => void,
+    setHistoryTotal: (value: React.SetStateAction<number>) => void,
+    pageSizeRef: React.RefObject<number>,
+    scheduleBackfill: () => void,
 ) {
     const onAddHistorySlot = useCallback((historySlot: HistorySlot) => {
-        setHistorySlots(slots => [historySlot, ...slots]);
-    }, [setHistorySlots]);
+        setHistoryTotal(t => t + 1);
+        // New history items are newest-first; prepend and drop any overflow past the page.
+        setHistorySlots(slots => [historySlot, ...slots].slice(0, pageSizeRef.current));
+    }, [setHistorySlots, setHistoryTotal]);
 
     const onSelectHistorySlots = useCallback((ids: Set<string>, isSelected: boolean) => {
         setHistorySlots(slots => slots.map(x => ids.has(x.nzo_id) ? { ...x, isSelected } : x));
@@ -81,7 +98,9 @@ export function useHistoryEvents(
 
     const onRemoveHistorySlots = useCallback((ids: Set<string>) => {
         setHistorySlots(slots => slots.filter(x => !ids.has(x.nzo_id)));
-    }, [setHistorySlots]);
+        setHistoryTotal(t => Math.max(0, t - ids.size));
+        scheduleBackfill();
+    }, [setHistorySlots, setHistoryTotal, scheduleBackfill]);
 
     return memoize({
         onAddHistorySlot,

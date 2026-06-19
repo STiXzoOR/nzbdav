@@ -17,10 +17,6 @@
     }
 }
 
-.section {
-    margin-bottom: 50px;
-}
-
 .sectionTitle {
     display: flex;
     gap: 10px;
@@ -28,18 +24,6 @@
 
     h3 {
         margin: 0;
-    }
-}
-
-.alert {
-    margin-bottom: 35px;
-
-    .list {
-        margin-bottom: 0;
-    }
-
-    .listItem {
-        margin-top: 5px
     }
 }
 
@@ -60,4 +44,19 @@
     justify-content: center;
     pointer-events: none;
     border-radius: 4px;
+}
+
+.paginationBar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: 15px;
+}
+
+.pageSizeSelector {
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
